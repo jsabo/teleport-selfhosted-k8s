@@ -26,10 +26,17 @@ root, and full-chain verification: [`ssl-certificates.md`](ssl-certificates.md).
 > **The Teleport `clusterName`, the DNS name clients resolve, and the TLS
 > certificate SANs must all be the same string.**
 
-This repo uses `teleport.demo.test` everywhere. The name is **permanent** —
-Teleport bakes it into its own CAs at first start; changing it later means
-rebuilding the cluster. (`.test` is IANA-reserved, so a missing hosts entry
-fails fast instead of hitting a real site.)
+The name is **permanent** — Teleport bakes it into its own CAs at first
+start; changing it later means rebuilding the cluster.
+
+Two naming conventions in this repo:
+
+- **Local walkthroughs (01, 02):** `teleport.demo.test` — resolved via a
+  hosts entry. (`.test` is IANA-reserved, so a missing hosts entry fails
+  fast instead of hitting a real site.)
+- **[`03-openshift/`](03-openshift/) and [`ssl-certificates.md`](ssl-certificates.md):**
+  a real DNS name you control; the docs use `teleport.example.com` as the
+  stand-in — substitute yours.
 
 ## One-time setup
 
@@ -79,7 +86,8 @@ docker compose down -v     # full reset — wipes the cluster
 ```
 
 Reset (`down -v`, then `up -d`) when switching between 01 and 02. New
-terminal? Re-run the `export KUBECONFIG` from step 2 — every README assumes it.
+terminal? Re-run the `export KUBECONFIG` from step 2 — the local
+walkthroughs (01 and 02) assume it.
 
 ---
 
@@ -89,8 +97,11 @@ terminal? Re-run the `export KUBECONFIG` from step 2 — every README assumes it
 
 The chart has `acme: true`, but Teleport's built-in ACME uses the
 **TLS-ALPN-01** challenge: Let's Encrypt must reach your proxy on **public
-port 443**. A laptop cluster can't satisfy that, so this repo brings its own
-CA instead — which is also the honest demo of the clusterName/DNS/SAN rule.
+port 443**. A laptop cluster can't satisfy that, so the local walkthroughs
+bring their own CA instead — which is also the honest demo of the
+clusterName/DNS/SAN rule. (On a reachable cluster with a real domain, ACME
+or a CA-signed cert works — that's the [`03-openshift/`](03-openshift/) and
+[`ssl-certificates.md`](ssl-certificates.md) territory.)
 
 For a real deployment with a real domain, use
 [cert-manager with a DNS-01 solver](https://cert-manager.io/docs/configuration/acme/dns01/):
