@@ -1,7 +1,12 @@
 # Teleport on OpenShift — Helm values
 #
-# Backend: SQLite (standalone) | TLS: publicly trusted cert | Service: ClusterIP
-# External access: OpenShift Route (passthrough) — see route-passthrough.yaml
+# Backend: SQLite (standalone) | TLS: publicly trusted CA (Option B) | Service: ClusterIP
+# External access: OpenShift Routes (passthrough) — see route-passthrough.yaml
+#
+# Use this file when your certificate is issued by a publicly trusted CA
+# (purchased cert, Let's Encrypt, DigiCert, ...). For a private/corporate
+# PKI use values-corporate-pki.yaml; for the self-signed demo CA use
+# values-self-signed.yaml.
 #
 # CLUSTER_NAME must equal the Route hostname exactly. It is permanent —
 # cannot be changed post-install without wiping all data and starting over.
@@ -17,13 +22,13 @@
 #   sed -i.bak \
 #     -e "s/KUBE_CLUSTER_NAME/${KUBE_CLUSTER_NAME}/g" \
 #     -e "s/CLUSTER_NAME/${CLUSTER_NAME}/g" \
-#     values-trusted.yaml && rm values-trusted.yaml.bak
+#     values-public-ca.yaml && rm values-public-ca.yaml.bak
 #
 # Install:
 #   helm install teleport-cluster teleport/teleport-cluster \
 #     --namespace teleport \
 #     --version 18.10.1 \
-#     --values values-trusted.yaml
+#     --values values-public-ca.yaml
 
 chartMode: standalone
 clusterName: CLUSTER_NAME          # REPLACE — permanent, must match Route hostname
@@ -38,13 +43,11 @@ enterprise: true
 acme: false
 tls:
   existingSecretName: teleport-tls   # kubectl create secret tls — chain + key (Step 4B)
-  # PRIVATE/CORPORATE PKI ONLY — uncomment both lines and create the
-  # teleport-tls-ca secret (Step 4B). The proxy verifies its own cert chain
-  # against the container trust store at startup and crash-loops if the
-  # issuing CA isn't trusted; this mounts your CA and sets SSL_CERT_FILE.
-  # Leave commented for publicly trusted CAs.
-  # existingCASecretName: teleport-tls-ca
-  # existingCASecretKeyName: ca.pem
+  # No CA secret here: the container's Mozilla bundle already trusts public
+  # CAs. If your CA's root is very new, verify the chain against the image's
+  # bundle BEFORE installing (Option B in the README) — the fix for a
+  # too-new root is appending the CA's cross-signed root to chain.crt,
+  # not a CA secret.
 
 auth:
   teleportConfig:

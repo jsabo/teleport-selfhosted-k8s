@@ -173,6 +173,11 @@ single most common certificate failure: browsers often paper over it (they
 cache intermediates), while `tsh`, `curl`, and enrolling nodes fail with
 `certificate signed by unknown authority`.
 
+> **Corporate PKI fast path:** your PKI team handed you the intermediates
+> and root in Step 2 — skip the AIA archaeology below and jump straight to
+> the link-verification commands (issuer/subject and AKI/SKI), then to
+> Step 5's `openssl verify`.
+
 **If the CA gave you a bundle** (`.ca-bundle`, "intermediate certificates",
 or the PKI team's chain file), use it — but still verify it below.
 
@@ -327,46 +332,66 @@ tls:
   existingSecretName: teleport-tls
 ```
 
-- **Public CA**: that's everything — usually. Do **not** set
-  `existingCASecretName` for a publicly trusted cert; the container's
-  Mozilla bundle already has the root. (Exception: a brand-new CA root —
-  see the crashloop note below.)
-- **Private / corporate PKI**: the pods **do** need your CA. Create a second
-  secret and point the chart at it:
+### 7A — Publicly trusted CA
 
-  ```bash
-  kubectl -n teleport create secret generic teleport-tls-ca \
-    --from-file=ca.pem=corporate-root-ca.crt
-  ```
+That's everything — usually. Do **not** set `existingCASecretName` for a
+publicly trusted cert; the container's Mozilla bundle already has the root.
+(Exception: a brand-new CA root — see the crashloop note below, and verify
+against the image bundle *before* deploying.)
 
-  ```yaml
-  tls:
-    existingSecretName: teleport-tls
-    existingCASecretName: teleport-tls-ca
-  ```
+### 7B — Private/corporate PKI
 
-  **Why:** at startup the Proxy Service verifies its own configured cert
-  chain against the *container's* trust store and exits fatally if the
-  chain doesn't terminate at a trusted root (`x509: certificate signed by
-  unknown authority`, pods in CrashLoopBackOff). A corporate root is never
-  in the container's Mozilla bundle. `existingCASecretName` sets
-  `SSL_CERT_FILE`, which Go's cert pool honors — that's how the check
-  passes. This check has existed since 2017; every Teleport version
-  behaves this way.
+The pods **do** need your CA — and the bundle you give them should be
+**the image's own trust bundle plus your corporate root**, not the root
+alone:
 
-  Two caveats: (1) `SSL_CERT_FILE` **replaces** the Mozilla bundle for the
-  pods' outbound TLS too — if Teleport must also reach public endpoints
-  (SSO providers, webhooks, plugins), the secret must contain your
-  corporate root **appended to the full Mozilla bundle**, not the root
-  alone. (2) This does nothing for clients — the corporate root must still
-  be in the OS trust store of every workstation and every enrolled node
-  (see [`03-openshift/install-ssh-nodes.md`](03-openshift/install-ssh-nodes.md)).
+```bash
+# Extract the trust bundle from the exact image you deploy:
+CID=$(docker create public.ecr.aws/gravitational/teleport-ent-distroless:18.10.1)
+docker cp $CID:/etc/ssl/certs/ca-certificates.crt image-ca-bundle.crt
+docker rm $CID
+
+# Append your corporate root and create the secret:
+cat image-ca-bundle.crt corporate-root-ca.crt > ca.pem
+kubectl -n teleport create secret generic teleport-tls-ca \
+  --from-file=ca.pem=ca.pem
+```
+
+```yaml
+tls:
+  existingSecretName: teleport-tls
+  existingCASecretName: teleport-tls-ca
+  existingCASecretKeyName: ca.pem
+```
+
+(On OpenShift, [`03-openshift/values-corporate-pki.yaml`](03-openshift/values-corporate-pki.yaml)
+already contains this tls block.)
+
+**Why the CA secret at all:** at startup the Proxy Service verifies its own
+configured cert chain against the *container's* trust store and exits
+fatally if the chain doesn't terminate at a trusted root (`x509:
+certificate signed by unknown authority`, pods in CrashLoopBackOff). A
+corporate root is never in the container's Mozilla bundle.
+`existingCASecretName` sets `SSL_CERT_FILE`, which Go's cert pool honors —
+that's how the check passes. This check has existed since 2017; every
+Teleport version behaves this way.
+
+**Why the full bundle and not just your root:** `SSL_CERT_FILE`
+**replaces** the Mozilla bundle for the pods' outbound TLS too. Root-only
+boots the proxy but silently breaks every future outbound connection to
+public endpoints — SSO providers (Okta/Entra), webhooks, plugins — with
+`certificate signed by unknown authority`. Image-bundle + root keeps both
+directions working. Since the bundle comes from the image, **rebuild this
+secret when you upgrade Teleport**.
+
+**What this does NOT do:** nothing for clients — the corporate root must
+still be in the OS trust store of every workstation and every enrolled node
+(see [`03-openshift/install-ssh-nodes.md`](03-openshift/install-ssh-nodes.md)).
 
 > **Proxy CrashLoopBackOff: `unable to verify HTTPS certificate chain`** —
 > the startup check above failed. Two causes, two fixes:
 >
-> 1. **Private/corporate PKI** and no CA secret → create `teleport-tls-ca`
->    and set `existingCASecretName` as shown above.
+> 1. **Private/corporate PKI** and no CA secret → follow 7B above.
 > 2. **Public CA whose root is newer than the container's bundle.** CA
 >    trust bundles in server images lag: a recently established root (e.g.
 >    SSL.com's 2022 roots vs. the Debian bundle in the Teleport image) may
@@ -428,7 +453,7 @@ kubectl -n teleport rollout restart deployment/teleport-cluster-proxy
 
 ---
 
-## Quick reference — the five things that must be true
+## Quick reference — the six things that must be true
 
 | # | Requirement | One-line check |
 |---|---|---|
@@ -436,4 +461,5 @@ kubectl -n teleport rollout restart deployment/teleport-cluster-proxy
 | 2 | Full chain, leaf first, no root | `openssl crl2pkcs7 -nocrl -certfile chain.crt \| openssl pkcs7 -print_certs -noout` |
 | 3 | Key matches leaf | pubkey sha256 of cert == key (Step 3) |
 | 4 | Chain verifies to a trusted root | `openssl verify -CAfile root.crt -untrusted intermediates.crt leaf.crt` |
-| 5 | Clients trust the root & TLS reaches Teleport unterminated | `curl` ping with no `-k`; fingerprint compare (Step 8) |
+| 5 | **The server image trusts the issuing CA** — the proxy refuses to start otherwise | Public CA: `openssl verify` against the image's extracted bundle (Step 7A / crashloop note). Corporate PKI: the `teleport-tls-ca` secret from 7B |
+| 6 | Clients trust the root & TLS reaches Teleport unterminated | `curl` ping with no `-k`; fingerprint compare (Step 8) |

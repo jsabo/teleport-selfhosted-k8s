@@ -1,29 +1,42 @@
 # Teleport on OpenShift — Helm values
 #
-# Backend: SQLite (standalone) | TLS: self-signed demo CA (Option A) | Service: ClusterIP
-# External access: OpenShift Route (passthrough) — see route-passthrough.yaml
+# Backend: SQLite (standalone) | TLS: private/corporate PKI (Option C) | Service: ClusterIP
+# External access: OpenShift Routes (passthrough) — see route-passthrough.yaml
+#
+# Use this file when your certificate is issued by a PRIVATE or CORPORATE
+# CA (internal PKI). It differs from values-public-ca.yaml in exactly one
+# way: the tls block also mounts your CA bundle into the Teleport pods.
+#
+# Why that's required: at startup the Proxy Service verifies its own
+# configured certificate chain against the CONTAINER's trust store and
+# exits fatally ("unable to verify HTTPS certificate chain ... x509:
+# certificate signed by unknown authority", pods in CrashLoopBackOff) if
+# the issuing root isn't trusted — and a corporate root is never in the
+# container's Mozilla bundle. existingCASecretName mounts your CA secret
+# and sets SSL_CERT_FILE, which the verification honors.
+#
+# IMPORTANT: SSL_CERT_FILE REPLACES the container's default Mozilla bundle
+# for all outbound TLS too. Build the teleport-tls-ca secret as
+#   (image CA bundle) + (your corporate root)
+# per Step 4C in the README — not the corporate root alone — or outbound
+# connections to public endpoints (SSO providers, webhooks) will fail.
 #
 # CLUSTER_NAME must equal the Route hostname exactly. It is permanent —
 # cannot be changed post-install without wiping all data and starting over.
 # Mismatch causes tsh login to fail with "missing selected ALPN property"
-# after password+OTP succeed (Teleport's cert won't cover the Route hostname,
-# ALPN negotiation breaks, grpc-go 1.67+ rejects the connection).
-#
-# Get your Route hostname:
-#   APPS_DOMAIN=$(oc get ingresses.config/cluster -o jsonpath='{.spec.domain}')
-#   echo "teleport.$APPS_DOMAIN"   # e.g. teleport.apps.example.com
+# after password+OTP succeed.
 #
 # Replace all placeholders before installing (KUBE_CLUSTER_NAME must come first):
 #   sed -i.bak \
 #     -e "s/KUBE_CLUSTER_NAME/${KUBE_CLUSTER_NAME}/g" \
 #     -e "s/CLUSTER_NAME/${CLUSTER_NAME}/g" \
-#     values-self-signed.yaml && rm values-self-signed.yaml.bak
+#     values-corporate-pki.yaml && rm values-corporate-pki.yaml.bak
 #
 # Install:
 #   helm install teleport-cluster teleport/teleport-cluster \
 #     --namespace teleport \
 #     --version 18.10.1 \
-#     --values values-self-signed.yaml
+#     --values values-corporate-pki.yaml
 
 chartMode: standalone
 clusterName: CLUSTER_NAME          # REPLACE — permanent, must match Route hostname
@@ -37,8 +50,8 @@ enterprise: true
 
 acme: false
 tls:
-  existingSecretName: teleport-tls        # kubectl create secret tls — chain + key (Step 4A)
-  existingCASecretName: teleport-tls-ca   # kubectl create secret generic — CA only (Step 4A)
+  existingSecretName: teleport-tls        # kubectl create secret tls — chain + key (Step 4C)
+  existingCASecretName: teleport-tls-ca   # kubectl create secret generic — image bundle + corporate root (Step 4C)
   existingCASecretKeyName: ca.pem         # key name inside teleport-tls-ca
 
 auth:

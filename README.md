@@ -100,7 +100,7 @@ The chart has `acme: true`, but Teleport's built-in ACME uses the
 port 443**. A laptop cluster can't satisfy that, so the local walkthroughs
 bring their own CA instead — which is also the honest demo of the
 clusterName/DNS/SAN rule. (On a reachable cluster with a real domain, ACME
-or a CA-signed cert works — that's the [`03-openshift/`](03-openshift/) and
+or a CA-issued cert works — that's the [`03-openshift/`](03-openshift/) and
 [`ssl-certificates.md`](ssl-certificates.md) territory.)
 
 For a real deployment with a real domain, use
@@ -137,10 +137,16 @@ kubectl create secret tls teleport-tls \
   -n teleport
 ```
 
-Then in the values file, keep `acme: false` and `tls.existingSecretName:
-teleport-tls`, but **delete the `existingCASecretName` line** (and skip
-creating `teleport-tls-ca`) — a public CA is already trusted everywhere, and
-when `existingCASecretName` is set, Teleport trusts *only* that bundle.
+Then use the values setup for your path: keep `acme: false` and
+`tls.existingSecretName: teleport-tls`, and drop the `existingCASecretName`
+/ `teleport-tls-ca` parts that the local walkthroughs use for the demo CA —
+a publicly trusted cert doesn't need them (in `03-openshift/` there's a
+dedicated `values-public-ca.yaml` for exactly this). One pitfall worth
+knowing before you deploy: if your CA's **root is very new** (SSL.com's
+2022 roots, for example), it may be missing from the Teleport image's trust
+bundle even though your laptop trusts it, and the proxy will refuse to
+start — verify and fix per the crashloop note in
+[`ssl-certificates.md`](ssl-certificates.md).
 
 With a real cert you also skip the rest of the demo PKI: no `make-certs.sh`,
 no trusting the demo CA (setup step 5), no `--insecure` fallback. Create a
