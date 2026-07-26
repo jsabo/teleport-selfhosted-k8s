@@ -352,8 +352,12 @@ curl -k --no-alpn -i \
 ## 7 — First admin user
 
 ```bash
+# --kubernetes-groups fills the {{internal.kubernetes_groups}} trait the
+# preset access role uses — without it, kubectl through Teleport is denied
+# with "Your user's Teleport role does not allow Kubernetes access".
 kubectl exec -n teleport deployment/teleport-cluster-auth -- \
-  tctl users add admin --roles=editor,access,auditor
+  tctl users add admin --roles=editor,access,auditor \
+  --kubernetes-groups=system:masters
 ```
 
 Open the printed invite URL in a browser, then log in:
@@ -372,6 +376,20 @@ tsh login --proxy=${CLUSTER_NAME}:443 --user=admin
 > Flag-free login depends on the `teleport-auth-sni` Route from Step 6 —
 > without it, login fails *after* password+MFA with a certificate error
 > naming `<hex>.teleport.cluster.local` (see Troubleshooting).
+
+The chart registers the OpenShift cluster itself as a Kubernetes resource,
+so you can immediately test Kubernetes access (this also exercises the
+`teleport-kube-sni` Route from Step 6):
+
+```bash
+tsh kube ls
+tsh kube login KUBE_CLUSTER_NAME
+kubectl get pods -n teleport   # now routed through Teleport
+```
+
+> `tsh kube login` switches your default kubectl context to Teleport. To go
+> back to direct cluster-admin access, switch contexts
+> (`kubectl config get-contexts`) or use `oc` with your admin kubeconfig.
 
 > **Why self-signed requires both flags:** `--insecure` is needed because the
 > cert isn't publicly trusted. However, `--insecure` causes tsh to take a
@@ -427,6 +445,7 @@ Deletes the PVC and all cluster data — not recoverable.
 | `missing selected ALPN property` after password+OTP (without `--insecure`) | `clusterName` doesn't match the Route hostname — reinstall required. Ensure `clusterName`, `public_addr`, `rp_id`, and the Route `host` all use the same FQDN |
 | cert error on `teleport.cluster.local` after importing self-signed CA | CA import only helps with the external cert. tsh's post-auth gRPC channel uses Teleport's internal host CA (downloaded during login), which is separate from your self-signed CA. CA import cannot substitute for a CA-signed cert. Use `TELEPORT_TLS_ROUTING_CONN_UPGRADE=true --insecure` for self-signed setups |
 | `tsh login` fails after password+MFA: `certificate is valid for *.apps.<cluster>.<domain>, not <hex>.teleport.cluster.local` | The `teleport-auth-sni` Route is missing or its host doesn't match `hex(clusterName)` — the router answered the auth connection with its default cert. Re-run Step 6 (all three Routes) and check with the `openssl s_client -servername` command there. The kube equivalent names `kube-teleport-proxy-alpn.<clusterName>` and means the `teleport-kube-sni` Route is missing |
+| `Your user's Teleport role does not allow Kubernetes access` | The user has no `kubernetes_groups` trait (the preset `access` role fills its groups from `{{internal.kubernetes_groups}}`). For an existing user: `tctl users update <user> --set-kubernetes-groups=system:masters`, then `tsh logout` + login again — traits only land in newly issued certs |
 | `webauthn rp_id mismatch` | `rp_id` in the values file must equal the hostname in the browser URL (i.e. `clusterName`) |
 | Route admitted but `curl` times out | SCC permissions may be wrong — check pods are `Running` and not `CreateContainerConfigError` |
 | Cluster state gone after a pod restart | `persistence.enabled` must be `true` (both values files here set it, with a 10Gi PVC). With SQLite standalone, disabling persistence means every auth pod restart wipes users, CAs, and all issued certs |
