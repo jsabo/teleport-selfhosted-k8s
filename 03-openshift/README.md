@@ -36,8 +36,11 @@ the wildcard `*.apps...` record already exists):
 APPS_DOMAIN=$(oc get ingresses.config/cluster -o jsonpath='{.spec.domain}')
 export CLUSTER_NAME="teleport.${APPS_DOMAIN}"
 export KUBE_CLUSTER_NAME=$(oc get infrastructure/cluster -o jsonpath='{.status.infrastructureName}')
+# The auth service's SNI is the hex-encoded cluster name (see Step 6)
+export CLUSTER_NAME_HEX=$(printf '%s' "$CLUSTER_NAME" | xxd -p | tr -d '\n')
 echo $CLUSTER_NAME        # e.g. teleport.apps.ocp.example.com
 echo $KUBE_CLUSTER_NAME   # e.g. ocp
+echo $CLUSTER_NAME_HEX    # e.g. 74656c65706f72742e617070732e6f63702e6578616d706c652e636f6d
 ```
 
 **Option 2 — any public DNS name you control** (e.g. `teleport.example.com`,
@@ -48,6 +51,8 @@ the router:
 ```bash
 export CLUSTER_NAME="teleport.example.com"
 export KUBE_CLUSTER_NAME=$(oc get infrastructure/cluster -o jsonpath='{.status.infrastructureName}')
+# The auth service's SNI is the hex-encoded cluster name (see Step 6)
+export CLUSTER_NAME_HEX=$(printf '%s' "$CLUSTER_NAME" | xxd -p | tr -d '\n')
 
 # Find the router's load balancer address, then create a CNAME to it
 # in YOUR domain's DNS zone:   teleport.example.com → <router LB hostname>
@@ -283,20 +288,48 @@ kubectl get pods -n teleport
 
 ---
 
-## 6 — Create the OpenShift Route
+## 6 — Create the OpenShift Routes
 
-Apply the passthrough Route (no TLS termination at HAProxy — raw TCP
-forwarded to Teleport):
+The router matches passthrough traffic **by SNI**, and Teleport announces
+three different SNI names over port 443 — so Teleport needs **three**
+passthrough Routes, all pointing at the same Service:
+
+| SNI the client sends | Used by |
+|---|---|
+| `${CLUSTER_NAME}` | web UI, tsh ssh/db, agent joins |
+| `${CLUSTER_NAME_HEX}.teleport.cluster.local` | auth gRPC — `tsh login`, `tctl` |
+| `kube-teleport-proxy-alpn.${CLUSTER_NAME}` | Kubernetes access |
+
+(The hex encoding is deliberate on Teleport's part — it defeats wildcard
+matching — so a wildcard Route can't cover the auth name. The extra names
+need **no DNS records**: clients always dial `${CLUSTER_NAME}`; these names
+travel only inside the TLS handshake, which is what HAProxy routes on.)
+
+Apply all three (order of the `sed` expressions matters —
+`CLUSTER_NAME_HEX` first, since `CLUSTER_NAME` is a substring of it):
 
 ```bash
-sed "s/CLUSTER_NAME/${CLUSTER_NAME}/g" route-passthrough.yaml | oc apply -f -
+sed -e "s/CLUSTER_NAME_HEX/${CLUSTER_NAME_HEX}/g" \
+    -e "s/CLUSTER_NAME/${CLUSTER_NAME}/g" \
+    route-passthrough.yaml | oc apply -f -
 ```
 
-Verify the Route was admitted and DNS resolves:
+Verify all three Routes were admitted, DNS resolves, and the auth SNI
+reaches Teleport (not the router's default certificate):
 
 ```bash
-oc get route teleport -n teleport
+oc get routes -n teleport
+# teleport, teleport-auth-sni, teleport-kube-sni — all passthrough/None
+
 curl -k https://${CLUSTER_NAME}/webapi/ping | jq .server_version
+
+# The auth SNI must be answered by Teleport's internal cert — if this shows
+# the router's *.apps... certificate instead, the teleport-auth-sni Route
+# isn't matching and tsh login will fail after password+MFA:
+openssl s_client -connect ${CLUSTER_NAME}:443 \
+  -servername ${CLUSTER_NAME_HEX}.teleport.cluster.local </dev/null 2>/dev/null \
+  | openssl x509 -noout -subject
+# expect a Teleport-issued cert (CN=<cluster name>), NOT *.apps...
 ```
 
 (`-k` skips TLS verification for the self-signed cert. To avoid needing `-k`
@@ -336,6 +369,10 @@ TELEPORT_TLS_ROUTING_CONN_UPGRADE=true \
 tsh login --proxy=${CLUSTER_NAME}:443 --user=admin
 ```
 
+> Flag-free login depends on the `teleport-auth-sni` Route from Step 6 —
+> without it, login fails *after* password+MFA with a certificate error
+> naming `<hex>.teleport.cluster.local` (see Troubleshooting).
+
 > **Why self-signed requires both flags:** `--insecure` is needed because the
 > cert isn't publicly trusted. However, `--insecure` causes tsh to take a
 > code path where the server does not select ALPN for the post-auth gRPC
@@ -370,7 +407,7 @@ Teleport supports one minor version at a time (18.x → 19.x, not 18.x → 20.x)
 
 ```bash
 helm uninstall teleport-cluster -n teleport
-oc delete route teleport -n teleport
+oc delete route teleport teleport-auth-sni teleport-kube-sni -n teleport
 kubectl delete namespace teleport
 ```
 
@@ -389,6 +426,7 @@ Deletes the PVC and all cluster data — not recoverable.
 | `missing selected ALPN property` after password+OTP (with `--insecure`) | `--insecure` causes a code path where the server does not select ALPN for the post-auth gRPC channel. Use `TELEPORT_TLS_ROUTING_CONN_UPGRADE=true tsh login ... --insecure` — the WebSocket upgrade bypasses ALPN negotiation entirely |
 | `missing selected ALPN property` after password+OTP (without `--insecure`) | `clusterName` doesn't match the Route hostname — reinstall required. Ensure `clusterName`, `public_addr`, `rp_id`, and the Route `host` all use the same FQDN |
 | cert error on `teleport.cluster.local` after importing self-signed CA | CA import only helps with the external cert. tsh's post-auth gRPC channel uses Teleport's internal host CA (downloaded during login), which is separate from your self-signed CA. CA import cannot substitute for a CA-signed cert. Use `TELEPORT_TLS_ROUTING_CONN_UPGRADE=true --insecure` for self-signed setups |
+| `tsh login` fails after password+MFA: `certificate is valid for *.apps.<cluster>.<domain>, not <hex>.teleport.cluster.local` | The `teleport-auth-sni` Route is missing or its host doesn't match `hex(clusterName)` — the router answered the auth connection with its default cert. Re-run Step 6 (all three Routes) and check with the `openssl s_client -servername` command there. The kube equivalent names `kube-teleport-proxy-alpn.<clusterName>` and means the `teleport-kube-sni` Route is missing |
 | `webauthn rp_id mismatch` | `rp_id` in the values file must equal the hostname in the browser URL (i.e. `clusterName`) |
 | Route admitted but `curl` times out | SCC permissions may be wrong — check pods are `Running` and not `CreateContainerConfigError` |
 | Cluster state gone after a pod restart | `persistence.enabled` must be `true` (both values files here set it, with a 10Gi PVC). With SQLite standalone, disabling persistence means every auth pod restart wipes users, CAs, and all issued certs |

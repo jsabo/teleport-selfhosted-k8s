@@ -1,26 +1,38 @@
-# Teleport OpenShift Route — passthrough termination
+# Teleport OpenShift Routes — passthrough termination
 #
-# HAProxy forwards raw TCP bytes unchanged. The client's TLS handshake
-# reaches Teleport directly, preserving ALPN extensions end-to-end.
-# Teleport multiplexes SSH/gRPC/kube/DB over 443 via ALPN, so edge or
-# reencrypt termination breaks tsh even though the web UI still works.
+# HAProxy routes passthrough traffic by SNI and forwards raw TLS bytes
+# unchanged, so ALPN reaches Teleport end-to-end. Teleport multiplexes
+# several protocols over port 443, and they announce themselves with THREE
+# different SNI names — each needs its own Route, or HAProxy answers with
+# the router's default certificate and the connection fails:
 #
-# Critical: clusterName in Helm values MUST equal this Route hostname.
+#   CLUSTER_NAME                               web UI, tsh ssh/db, agent joins
+#   CLUSTER_NAME_HEX.teleport.cluster.local    auth gRPC (tsh login, tctl)
+#   kube-teleport-proxy-alpn.CLUSTER_NAME      kubernetes access
+#
+# CLUSTER_NAME_HEX is hex(CLUSTER_NAME). Teleport hex-encodes the cluster
+# name in the auth SNI precisely so that wildcard certs/routes can't match
+# it (EncodeClusterName in the Teleport source) — so this cannot be solved
+# with a wildcard Route. Compute it in Step 0:
+#
+#   export CLUSTER_NAME_HEX=$(printf '%s' "$CLUSTER_NAME" | xxd -p | tr -d '\n')
+#
+# Apply — ORDER MATTERS: CLUSTER_NAME_HEX must be replaced before
+# CLUSTER_NAME, which is a substring of it:
+#
+#   sed -e "s/CLUSTER_NAME_HEX/${CLUSTER_NAME_HEX}/g" \
+#       -e "s/CLUSTER_NAME/${CLUSTER_NAME}/g" \
+#       route-passthrough.yaml | oc apply -f -
+#
+# No DNS records are needed for the second and third names — clients always
+# connect to CLUSTER_NAME's address; the extra names travel only inside the
+# TLS handshake as SNI, which is exactly what HAProxy routes on.
+#
+# Critical: clusterName in Helm values MUST equal the first Route hostname.
 # Teleport selects its serving cert by SNI. If clusterName differs from
 # the Route host, SNI won't match, Teleport won't set ALPN NextProtos
 # for that connection, and grpc-go 1.67+ fails with
 # "missing selected ALPN property" — even with --insecure.
-#
-# Apply (CLUSTER_NAME exported in Step 0 of the README):
-#   sed "s/CLUSTER_NAME/${CLUSTER_NAME}/g" route-passthrough.yaml | oc apply -f -
-#
-# Verify the connection upgrade endpoint works (Teleport's L7 LB detection):
-#   curl -k --no-alpn -i \
-#     -H "Connection: Upgrade" -H "Upgrade: websocket" \
-#     -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
-#     -H "Sec-WebSocket-Version: 13" \
-#     https://${CLUSTER_NAME}/webapi/connectionupgrade
-#   # Expect: HTTP/1.1 101 Switching Protocols
 
 apiVersion: route.openshift.io/v1
 kind: Route
@@ -30,9 +42,50 @@ metadata:
 spec:
   host: CLUSTER_NAME              # Must match clusterName in Helm values exactly
   port:
-    targetPort: tls               # Named port on the teleport Service → pod :3080
+    targetPort: tls               # Named port on the teleport-cluster Service → pod :3080
   tls:
     termination: passthrough      # Raw TCP — ALPN preserved end-to-end
+    insecureEdgeTerminationPolicy: None
+  to:
+    kind: Service
+    name: teleport-cluster
+    weight: 100
+  wildcardPolicy: None
+---
+# Auth gRPC — without this Route, tsh login fails AFTER password+MFA with:
+# "tls: failed to verify certificate: x509: certificate is valid for
+#  *.apps.<cluster>.<domain>, not <hex>.teleport.cluster.local"
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: teleport-auth-sni
+  namespace: teleport
+spec:
+  host: CLUSTER_NAME_HEX.teleport.cluster.local
+  port:
+    targetPort: tls
+  tls:
+    termination: passthrough
+    insecureEdgeTerminationPolicy: None
+  to:
+    kind: Service
+    name: teleport-cluster
+    weight: 100
+  wildcardPolicy: None
+---
+# Kubernetes access — kubectl through Teleport announces this SNI
+# (KubeTeleportProxyALPNPrefix in the Teleport source)
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: teleport-kube-sni
+  namespace: teleport
+spec:
+  host: kube-teleport-proxy-alpn.CLUSTER_NAME
+  port:
+    targetPort: tls
+  tls:
+    termination: passthrough
     insecureEdgeTerminationPolicy: None
   to:
     kind: Service
