@@ -1,0 +1,89 @@
+# PostgreSQL for Teleport — via the CloudNativePG operator.
+#
+# One Postgres cluster, three databases, one user (password auth — the
+# "simple authentication" variant; production would use client certificates):
+#
+#   teleport_backend  — Teleport cluster state
+#   teleport_audit    — Teleport audit events
+#   access_graph      — Identity Security graph data
+#
+# What the Teleport postgres backend requires (and how it's met here):
+#   * wal_level = logical      → CloudNativePG's default (set explicitly below)
+#   * wal2json output plugin   → NOT in any stock image; provided by the
+#                                custom image built from postgres-image/
+#                                (see README step 1)
+#   * the REPLICATION role attribute on the user → postInitSQL below
+#   * the user owns its databases (Teleport creates its own schemas)
+#
+# Apply with: kubectl apply -n teleport -f cnpg-cluster.yaml
+---
+# The database user's credentials. CNPG requires type kubernetes.io/basic-auth.
+# The same username/password appears in the connection strings in
+# teleport-cluster-values.yaml and the Access Graph secret — keep them in sync.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: teleport-db-creds
+type: kubernetes.io/basic-auth
+stringData:
+  username: teleport
+  password: teleport-demo-password
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: teleport-db
+spec:
+  # 1 for the local demo. Set 3 for real HA — CNPG handles replication,
+  # failover, and connection routing (-rw / -ro services) automatically.
+  instances: 1
+
+  # The wal2json-enabled image from postgres-image/ (README step 1).
+  # Running on a real cluster? Push it to your registry and change this.
+  imageName: cnpg-wal2json:17
+
+  bootstrap:
+    initdb:
+      database: teleport_backend
+      owner: teleport
+      secret:
+        name: teleport-db-creds
+      # Runs once as superuser after the cluster initializes. (The two other
+      # databases are created declaratively — see the Database resources below.)
+      postInitSQL:
+        - ALTER ROLE teleport REPLICATION
+
+  postgresql:
+    parameters:
+      # CNPG's default is already "logical", but Teleport's backend depends
+      # on it (change-feed via logical decoding) — so we pin it explicitly.
+      wal_level: logical
+
+  storage:
+    size: 5Gi
+---
+# Audit events database, managed declaratively by the operator.
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: teleport-db-audit
+spec:
+  cluster:
+    name: teleport-db
+  name: teleport_audit
+  owner: teleport
+---
+# Access Graph database. The vector extension (pgvector, included in the
+# image) must be created by a superuser — the operator does it here, since
+# the teleport user can't.
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: teleport-db-access-graph
+spec:
+  cluster:
+    name: teleport-db
+  name: access_graph
+  owner: teleport
+  extensions:
+    - name: vector

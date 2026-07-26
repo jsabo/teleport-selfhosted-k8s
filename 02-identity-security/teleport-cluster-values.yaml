@@ -1,0 +1,99 @@
+# Teleport Enterprise — PostgreSQL + MinIO backends (HA-capable)
+# Chart: teleport/teleport-cluster
+# Docs:  https://goteleport.com/docs/reference/helm-reference/teleport-cluster/
+#        https://goteleport.com/docs/reference/backends/
+#
+# Identical to ../01-quickstart/ except state moves out of the pod:
+#   cluster state      → PostgreSQL (teleport_backend)
+#   audit events       → PostgreSQL (teleport_audit)
+#   session recordings → MinIO (s3://teleport-sessions)
+# With no local state, the pods are disposable — which is what makes this
+# shape HA-capable.
+
+chartMode: standalone
+
+# Same rule as 01: clusterName == DNS name == cert SAN. Permanent.
+clusterName: teleport.demo.test
+
+proxyListenerMode: multiplex
+enterprise: true
+acme: false
+
+tls:
+  existingSecretName: teleport-tls
+  existingCASecretName: teleport-tls-ca
+
+# No PVC — there is no local state worth keeping anymore.
+persistence:
+  enabled: false
+
+# 1 for the local demo. With these backends this is the value you bump for
+# HA (plus CNPG instances: 3 and MinIO distributed mode).
+# (Counts AUTH pods. Don't be surprised by TWO proxy pods: the proxy is
+# stateless — its cert comes from a secret — so the chart always runs
+# max(replicaCount, 2) proxies for zero-downtime rollouts.)
+highAvailability:
+  replicaCount: 1
+
+service:
+  type: LoadBalancer
+
+auth:
+  teleportConfig:
+    # ── The storage backends (the whole point of this directory) ─────────
+    # The chart's standalone mode emits no storage section, so this block IS
+    # the storage config — deep-merged into the generated teleport.yaml.
+    teleport:
+      storage:
+        # Cluster state — requires wal_level=logical + wal2json + REPLICATION
+        # (all provided by cnpg-cluster.yaml)
+        type: postgresql
+        conn_string: "postgresql://teleport:teleport-demo-password@teleport-db-rw.teleport.svc.cluster.local:5432/teleport_backend?sslmode=require&pool_max_conns=20"
+
+        # Audit events — a SEPARATE database, same instance
+        audit_events_uri:
+          - "postgresql://teleport:teleport-demo-password@teleport-db-rw.teleport.svc.cluster.local:5432/teleport_audit?sslmode=require"
+
+        # Session recordings — S3 API against MinIO.
+        #   endpoint=...    point the AWS SDK at MinIO instead of AWS
+        #   insecure=true   plain HTTP inside the cluster (demo!)
+        #   disablesse=true no server-side encryption — this MinIO has no KMS
+        audit_sessions_uri: "s3://teleport-sessions/records?endpoint=minio.minio.svc.cluster.local:9000&insecure=true&disablesse=true&region=us-east-1"
+
+    auth_service:
+      authentication:
+        type: local
+        webauthn:
+          rp_id: teleport.demo.test
+
+    # ── Identity Security (Access Graph) ─────────────────────────────────
+    # Points the Auth Service at the teleport-access-graph deployment. The
+    # endpoint is that Service's in-cluster DNS name — which is why the same
+    # name is a SAN in its certificate (see ../demo-pki/make-certs.sh).
+    access_graph:
+      enabled: true
+      endpoint: teleport-access-graph.teleport-access-graph.svc.cluster.local:443
+      ca: /var/run/access-graph/ca.pem
+
+# S3 credentials for MinIO (matches minio-values.yaml), plus two AWS SDK
+# settings MinIO needs: the SDK's default integrity checksums are
+# S3-proper-only, so relax them to "when required".
+extraEnv:
+  - name: AWS_ACCESS_KEY_ID
+    value: minioadmin
+  - name: AWS_SECRET_ACCESS_KEY
+    value: minio-demo-password
+  - name: AWS_REQUEST_CHECKSUM_CALCULATION
+    value: WHEN_REQUIRED
+  - name: AWS_RESPONSE_CHECKSUM_VALIDATION
+    value: WHEN_REQUIRED
+
+# Mount the demo CA where access_graph.ca expects it.
+extraVolumes:
+  - name: access-graph-ca
+    configMap:
+      name: teleport-access-graph-ca
+extraVolumeMounts:
+  - name: access-graph-ca
+    mountPath: /var/run/access-graph
+    readOnly: true

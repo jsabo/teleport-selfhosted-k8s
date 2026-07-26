@@ -1,0 +1,41 @@
+# Teleport OpenShift Route — passthrough termination
+#
+# HAProxy forwards raw TCP bytes unchanged. The client's TLS handshake
+# reaches Teleport directly, preserving ALPN extensions end-to-end.
+# Teleport multiplexes SSH/gRPC/kube/DB over 443 via ALPN, so edge or
+# reencrypt termination breaks tsh even though the web UI still works.
+#
+# Critical: clusterName in Helm values MUST equal this Route hostname.
+# Teleport selects its serving cert by SNI. If clusterName differs from
+# the Route host, SNI won't match, Teleport won't set ALPN NextProtos
+# for that connection, and grpc-go 1.67+ fails with
+# "missing selected ALPN property" — even with --insecure.
+#
+# Apply (CLUSTER_NAME exported in Step 0 of the README):
+#   sed "s/CLUSTER_NAME/${CLUSTER_NAME}/g" route-passthrough.yaml | oc apply -f -
+#
+# Verify the connection upgrade endpoint works (Teleport's L7 LB detection):
+#   curl -k --no-alpn -i \
+#     -H "Connection: Upgrade" -H "Upgrade: websocket" \
+#     -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+#     -H "Sec-WebSocket-Version: 13" \
+#     https://${CLUSTER_NAME}/webapi/connectionupgrade
+#   # Expect: HTTP/1.1 101 Switching Protocols
+
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: teleport
+  namespace: teleport
+spec:
+  host: CLUSTER_NAME              # Must match clusterName in Helm values exactly
+  port:
+    targetPort: tls               # Named port on the teleport Service → pod :3080
+  tls:
+    termination: passthrough      # Raw TCP — ALPN preserved end-to-end
+    insecureEdgeTerminationPolicy: None
+  to:
+    kind: Service
+    name: teleport-cluster
+    weight: 100
+  wildcardPolicy: None

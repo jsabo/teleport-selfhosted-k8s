@@ -1,0 +1,67 @@
+# Teleport on OpenShift — Helm values
+#
+# Backend: SQLite (standalone) | TLS: self-signed CA | Service: ClusterIP
+# External access: OpenShift Route (passthrough) — see route-passthrough.yaml
+#
+# CLUSTER_NAME must equal the Route hostname exactly. It is permanent —
+# cannot be changed post-install without wiping all data and starting over.
+# Mismatch causes tsh login to fail with "missing selected ALPN property"
+# after password+OTP succeed (Teleport's cert won't cover the Route hostname,
+# ALPN negotiation breaks, grpc-go 1.67+ rejects the connection).
+#
+# Get your Route hostname:
+#   APPS_DOMAIN=$(oc get ingresses.config/cluster -o jsonpath='{.spec.domain}')
+#   echo "teleport.$APPS_DOMAIN"   # e.g. teleport.apps.example.com
+#
+# Replace all placeholders before installing (KUBE_CLUSTER_NAME must come first):
+#   sed -i.bak \
+#     -e "s/KUBE_CLUSTER_NAME/${KUBE_CLUSTER_NAME}/g" \
+#     -e "s/CLUSTER_NAME/${CLUSTER_NAME}/g" \
+#     values-self-signed.yaml && rm values-self-signed.yaml.bak
+#
+# Install:
+#   helm install teleport-cluster teleport/teleport-cluster \
+#     --namespace teleport \
+#     --version 18.10.0 \
+#     --values values-self-signed.yaml
+
+chartMode: standalone
+clusterName: CLUSTER_NAME          # REPLACE — permanent, must match Route hostname
+kubeClusterName: KUBE_CLUSTER_NAME # REPLACE — friendly name shown in the Teleport UI
+
+proxyListenerMode: multiplex    # All protocols on port 443 via ALPN.
+                                # Required — without this tsh login fails at
+                                # the gRPC cert step even with passthrough Route.
+
+enterprise: true
+
+acme: false
+tls:
+  existingSecretName: teleport-tls        # kubectl create secret tls — chain + key (Step 4A)
+  existingCASecretName: teleport-tls-ca   # kubectl create secret generic — CA only (Step 4A)
+  existingCASecretKeyName: ca.pem         # key name inside teleport-tls-ca
+
+auth:
+  teleportConfig:
+    proxy_service:
+      public_addr: "CLUSTER_NAME:443"   # REPLACE — must match Route hostname.
+                                        # Teleport embeds this in issued certs
+                                        # and join tokens.
+    auth_service:
+      authentication:
+        type: local
+        webauthn:
+          rp_id: CLUSTER_NAME   # REPLACE — must equal clusterName
+
+persistence:
+  enabled: true
+  size: 10Gi
+
+highAvailability:
+  replicaCount: 1   # SQLite does not support multiple replicas
+
+podSecurityPolicy:
+  enabled: false    # PSPs removed in OpenShift 4.x
+
+service:
+  type: ClusterIP   # No LoadBalancer — OpenShift Route is the external entry point

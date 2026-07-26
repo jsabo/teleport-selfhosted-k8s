@@ -1,0 +1,27 @@
+# MinIO — S3-compatible object storage for Teleport session recordings.
+# Chart: minio/minio (https://charts.min.io/)
+#
+# Access-key/secret-key auth (the S3 flavor of "simple authentication").
+# These same credentials appear as AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+# in teleport-cluster-values.yaml.
+
+mode: standalone          # one pod; "distributed" for real HA
+
+rootUser: minioadmin
+rootPassword: minio-demo-password
+
+# The bucket Teleport writes session recordings into
+# (matches audit_sessions_uri in teleport-cluster-values.yaml).
+buckets:
+  - name: teleport-sessions
+    policy: none
+    purge: false
+
+persistence:
+  enabled: true
+  size: 10Gi
+
+resources:
+  requests:
+    memory: 512Mi
+    cpu: 250m

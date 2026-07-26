@@ -1,0 +1,8 @@
+# Enterprise license — bring your own, never commit
+license.pem
+
+# Generated PKI (demo CA, keys, leaf certs)
+demo-pki/out/
+
+# k3s runtime kubeconfig
+k3s/kubeconfig/

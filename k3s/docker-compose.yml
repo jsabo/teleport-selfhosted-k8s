@@ -1,0 +1,39 @@
+# Local k3s in Docker — the demo Kubernetes cluster.
+#
+# This is ONLY the local test bed. Everything Teleport-related in this repo
+# works on any Kubernetes (vanilla, OpenShift, EKS/GKE/AKS) — see the root
+# README's Reference section.
+#
+# Port 443 : Teleport proxy. k3s's built-in ServiceLB satisfies the chart's
+#            LoadBalancer Service by binding 443 inside this container, and
+#            Docker publishes it to your machine — so teleport.demo.test
+#            resolves to 127.0.0.1 via /etc/hosts and just works.
+# Port 6443: Kubernetes API for kubectl/helm on your machine.
+#
+# Traefik is disabled so nothing else claims port 443.
+
+services:
+  k3s:
+    image: rancher/k3s:v1.31.5-k3s1
+    privileged: true
+    command: server --disable=traefik --tls-san=127.0.0.1
+    environment:
+      K3S_KUBECONFIG_OUTPUT: /kubeconfig/kubeconfig.yaml
+      K3S_KUBECONFIG_MODE: "644"
+    ports:
+      - "443:443"
+      - "6443:6443"
+    volumes:
+      - k3s-data:/var/lib/rancher/k3s
+      - ./kubeconfig:/kubeconfig
+    tmpfs:
+      - /run
+      - /var/run
+    healthcheck:
+      test: ["CMD", "kubectl", "get", "nodes"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+
+volumes:
+  k3s-data:

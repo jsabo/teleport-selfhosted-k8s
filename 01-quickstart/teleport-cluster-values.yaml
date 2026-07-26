@@ -1,0 +1,69 @@
+# Teleport Enterprise — simple / non-HA values
+# Chart: teleport/teleport-cluster (install with --version pinned; see README)
+# Docs:  https://goteleport.com/docs/reference/helm-reference/teleport-cluster/
+#
+# Backend: SQLite + session recordings on a PersistentVolumeClaim.
+# One replica only — the file backend cannot be shared. For HA, see
+# ../02-identity-security/.
+
+# standalone = self-contained: SQLite state + PVC. The chart generates the
+# whole Teleport config; we only layer small overrides below.
+chartMode: standalone
+
+# THE most important value. clusterName is the cluster's identity and its
+# public DNS name. It must equal:
+#   1. the name clients resolve (your /etc/hosts entry),
+#   2. the certificate SAN (demo-pki/make-certs.sh puts it there),
+#   3. this value.
+# It is PERMANENT — changing it later means rebuilding the cluster.
+clusterName: teleport.demo.test
+
+# Run every protocol (SSH, k8s, DB, desktop, web) through one TLS port: 443.
+# Required for this demo (only one port is published) and generally the
+# modern default. Without it, tsh login fails after authentication.
+proxyListenerMode: multiplex
+
+# Enterprise image + license. The chart mounts a secret named "license"
+# (key MUST be license.pem) from this namespace automatically.
+enterprise: true
+
+# Built-in ACME is OFF: it uses the TLS-ALPN-01 challenge, which requires
+# Let's Encrypt to reach this proxy on public port 443 — impossible for a
+# local cluster. We bring our own certs instead (see ../demo-pki/).
+acme: false
+
+tls:
+  # kubernetes.io/tls secret with the proxy cert chain + key
+  existingSecretName: teleport-tls
+  # Our demo CA, injected via SSL_CERT_FILE so Teleport itself trusts
+  # anything signed by it (matters more in 02, where Teleport has to
+  # verify the Access Graph service's certificate).
+  existingCASecretName: teleport-tls-ca
+
+# SQLite database + session recordings live here.
+persistence:
+  enabled: true
+  volumeSize: 5Gi
+
+# File backend ⇒ exactly one replica. This is the "non-HA" in non-HA.
+# (Counts AUTH pods. Don't be surprised by TWO proxy pods: the proxy is
+# stateless here — its cert comes from a secret — so the chart always runs
+# max(replicaCount, 2) proxies for zero-downtime rollouts.)
+highAvailability:
+  replicaCount: 1
+
+# LoadBalancer is the portable default: k3s ServiceLB satisfies it locally,
+# cloud LBs satisfy it on EKS/GKE/AKS. On OpenShift, use ClusterIP + a
+# passthrough Route instead (see root README platform notes).
+service:
+  type: LoadBalancer
+
+auth:
+  teleportConfig:
+    auth_service:
+      authentication:
+        type: local
+        # WebAuthn relying-party ID must equal the hostname the browser sees
+        # — clusterName again. Passkeys/security keys break if it doesn't.
+        webauthn:
+          rp_id: teleport.demo.test
