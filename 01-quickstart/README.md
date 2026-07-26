@@ -1,4 +1,4 @@
-# 01 — Simple: Teleport Enterprise, non-HA
+# 01 — Quickstart: Teleport Enterprise, non-HA
 
 The absolute minimum self-hosted Teleport Enterprise: one Helm release,
 **no databases anywhere**. Perfect for a first install, a POC, or

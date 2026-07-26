@@ -6,8 +6,9 @@ corporate PKI), find the intermediates, obtain the root, and prove the chain
 is correct **before** it goes anywhere near the cluster.
 
 Everything here is cluster-agnostic — it feeds the same `teleport-tls`
-Kubernetes secret whether you deploy on [k3s](01-quickstart/), OpenShift
-([`03-openshift/`](03-openshift/)), or a cloud provider.
+Kubernetes secret whether you deploy the local
+[quickstart](01-quickstart/), [OpenShift](03-openshift/), or a cloud
+provider.
 
 The worked example uses `teleport.example.com`. Substitute your cluster name.
 

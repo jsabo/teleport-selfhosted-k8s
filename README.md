@@ -3,8 +3,8 @@
 Copy-paste walkthroughs for running **Teleport Enterprise** on Kubernetes
 with the official Helm charts. Everything works on **any** Kubernetes —
 vanilla, OpenShift, EKS/GKE/AKS; the local [k3s-in-Docker](k3s/) cluster used
-throughout is just the easiest test bed, and nothing in the values files
-depends on it.
+by the local walkthroughs is just the easiest test bed, and nothing in the
+values files depends on it.
 
 ## Pick your deployment
 
@@ -37,6 +37,11 @@ Prerequisites: Docker, `kubectl`, `helm`, [`tsh`](https://goteleport.com/downloa
 and a Teleport **Enterprise license** (with the Identity Security entitlement
 for the Access Graph parts).
 
+> **Heading straight to [`03-openshift/`](03-openshift/)?** You only need
+> step 1 (the license). Steps 2–5 — the k3s cluster, demo PKI, hosts entry,
+> and CA trust — exist for the local walkthroughs; 03 uses your real cluster,
+> real DNS, and real certificates instead.
+
 ```bash
 # 1. Your license, at the repo root (gitignored — never commit it)
 cp /path/to/license.pem .
@@ -62,8 +67,8 @@ sudo security add-trusted-cert -d -r trustRoot \
 #    Linux: sudo cp demo-pki/out/ca.crt /usr/local/share/ca-certificates/teleport-demo.crt && sudo update-ca-certificates
 ```
 
-**Now open [`01-quickstart/`](01-quickstart/) or [`02-identity-security/`](02-identity-security/)
-and follow it top to bottom.**
+**Now open [`01-quickstart/`](01-quickstart/), [`02-identity-security/`](02-identity-security/),
+or [`03-openshift/`](03-openshift/) and follow it top to bottom.**
 
 Managing the k3s cluster afterwards:
 
@@ -117,7 +122,7 @@ cat teleport_example_com.crt teleport_example_com.ca-bundle > chain.crt
 
 # 2. Create the secret the values files already point at
 kubectl create secret tls teleport-tls \
-  --cert=chain.crt --key=teleport_example_com.key \
+  --cert=chain.crt --key=teleport.example.com.key \
   -n teleport
 ```
 
@@ -167,6 +172,12 @@ The values files contain nothing k3s-specific. What changes elsewhere:
 
 ```bash
 cd k3s && docker compose down -v
+
+# macOS:
 sudo sed -i '' '/teleport\.demo\.test/d' /etc/hosts
-sudo security delete-certificate -c "Teleport Demo CA" /Library/Keychains/System.keychain   # macOS
+sudo security delete-certificate -c "Teleport Demo CA" /Library/Keychains/System.keychain
+
+# Linux:
+sudo sed -i '/teleport\.demo\.test/d' /etc/hosts
+sudo rm /usr/local/share/ca-certificates/teleport-demo.crt && sudo update-ca-certificates --fresh
 ```

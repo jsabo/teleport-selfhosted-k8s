@@ -53,7 +53,7 @@ auth:
 
 persistence:
   enabled: true
-  size: 10Gi
+  volumeSize: 10Gi   # chart key is volumeSize, not size
 
 highAvailability:
   replicaCount: 1   # SQLite does not support multiple replicas

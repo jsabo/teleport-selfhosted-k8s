@@ -1,4 +1,4 @@
-# 02 — PostgreSQL + MinIO: real backends, HA-capable
+# 02 — Identity Security: Access Graph on real backends (PostgreSQL + MinIO)
 
 The same Teleport Enterprise as [`../01-quickstart/`](../01-quickstart/), plus
 **Identity Security (Access Graph)**, with all state moved out of the pods:
@@ -110,6 +110,7 @@ only goes Ready if it can reach Postgres (with wal2json) and MinIO.
 
 ```bash
 helm repo add teleport https://charts.releases.teleport.dev
+helm repo update
 helm install teleport-cluster teleport/teleport-cluster \
   --namespace teleport \
   --version 18.10.0 \
@@ -132,8 +133,12 @@ curl --cacert ../demo-pki/out/ca.crt https://teleport.demo.test/webapi/ping
 ## 5. First login
 
 ```bash
+# --kubernetes-groups fills the {{internal.kubernetes_groups}} trait the
+# preset access role uses — without it, step 7's Kubernetes session is
+# denied by the kube API and no recording ever gets written.
 kubectl -n teleport exec deploy/teleport-cluster-auth -- \
-  tctl users add admin --roles=editor,access,auditor
+  tctl users add admin --roles=editor,access,auditor \
+  --kubernetes-groups=system:masters
 ```
 
 Open the invite link, set password + passkey (no certificate warning), then:

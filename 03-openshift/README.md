@@ -150,16 +150,18 @@ Then continue to Step 4A.
 
 Full guide: [`../ssl-certificates.md`](../ssl-certificates.md) — CSR
 generation, finding and verifying the intermediates, obtaining the root,
-and proving the chain end-to-end. The short version:
+and proving the chain end-to-end. Follow it with `CLUSTER_NAME` as the
+certificate name; you end up with two files:
+
+- `chain.crt` — your leaf cert followed by the intermediates (root omitted)
+- `teleport.example.com.key` — the private key from the CSR step (named
+  after your cluster name)
+
+Prove the chain before it goes in the cluster:
 
 ```bash
-# leaf cert first, then any intermediates, then root (omit root — it's in
-# the clients' trust stores already)
-cat server.crt intermediate.crt > chain.crt
-
-# Prove the chain before it goes in the cluster:
-openssl verify -CAfile root.crt -untrusted intermediate.crt server.crt
-# → server.crt: OK
+openssl verify -CAfile root.crt -untrusted intermediates.crt teleport_example_com.crt
+# → teleport_example_com.crt: OK
 ```
 
 The cert must have `${CLUSTER_NAME}` in its SAN. No self-signed CA is needed.
@@ -205,8 +207,10 @@ Standard TLS secret — no CA secret needed. Use `values-trusted.yaml` in Step 5
 
 ```bash
 kubectl create secret tls teleport-tls \
-  --cert=chain.crt --key=server.key \
+  --cert=chain.crt --key=teleport.example.com.key \
   -n teleport
+# --key is the private key from the CSR step of ../ssl-certificates.md —
+# yours is named after your cluster name
 
 kubectl create secret generic license \
   --from-file=license.pem=../license.pem \
@@ -227,8 +231,9 @@ export VALUES_FILE=values-self-signed.yaml
 export VALUES_FILE=values-trusted.yaml
 ```
 
-Replace placeholders (`KUBE_CLUSTER_NAME` must come first — it is a
-substring of `CLUSTER_NAME` when using the apps domain):
+Replace placeholders (`KUBE_CLUSTER_NAME` must be replaced first — the
+token `CLUSTER_NAME` is a substring of the token `KUBE_CLUSTER_NAME`, so
+running the replacements in the other order would mangle it):
 
 ```bash
 sed -i.bak \
