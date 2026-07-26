@@ -1,0 +1,46 @@
+# Teleport Application Access — wildcard passthrough Route (OPTIONAL, Step 8)
+#
+# Teleport serves every registered application at <app>.CLUSTER_NAME
+# (e.g. https://dumper.CLUSTER_NAME), so the router needs one wildcard
+# passthrough Route covering *.CLUSTER_NAME. HAProxy matches wildcard SNI
+# for passthrough routes; only a single label is wildcarded (<app> may not
+# contain dots), which is exactly Teleport's app-URL shape.
+#
+# This Route lives in its own file because the default IngressController
+# REJECTS wildcard routes. Patch it first (cluster-wide router setting —
+# clear it with your cluster admin):
+#
+#   oc patch ingresscontroller/default -n openshift-ingress-operator \
+#     --type=merge -p '{"spec":{"routeAdmission":{"wildcardPolicy":"WildcardsAllowed"}}}'
+#
+# Also required (see Step 8 in the README):
+#   - a wildcard DNS record: *.CLUSTER_NAME → the same router LB CNAME
+#     (names under the OpenShift apps domain are already covered by the
+#     existing *.apps... record)
+#   - the wildcard in the cert SAN — every cert path in this guide
+#     already includes *.CLUSTER_NAME
+#
+# Apply:
+#   sed "s/CLUSTER_NAME/${CLUSTER_NAME}/g" route-apps-wildcard.yaml | oc apply -f -
+#
+# With wildcardPolicy: Subdomain the leftmost label of `host` is treated
+# as a wildcard — "apps" below is a placeholder label; the Route serves
+# *.CLUSTER_NAME.
+
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: teleport-apps-wildcard
+  namespace: teleport
+spec:
+  host: apps.CLUSTER_NAME          # leftmost label is wildcarded → *.CLUSTER_NAME
+  port:
+    targetPort: tls
+  tls:
+    termination: passthrough
+    insecureEdgeTerminationPolicy: None
+  to:
+    kind: Service
+    name: teleport-cluster
+    weight: 100
+  wildcardPolicy: Subdomain
