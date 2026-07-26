@@ -265,8 +265,7 @@ teleport_example_com.crt: OK
 
 Servers must send the leaf plus all intermediates, **leaf first**, in
 issuing order. The root is **omitted** — every client already has it (that's
-what makes it a root), sending it wastes bytes, and some strict clients
-reject chains that include it:
+what makes it a root):
 
 ```bash
 cat teleport_example_com.crt intermediates.crt > chain.crt
@@ -279,6 +278,27 @@ subject must be the previous issuer:
 openssl crl2pkcs7 -nocrl -certfile chain.crt \
   | openssl pkcs7 -print_certs -noout
 ```
+
+> **Check your CA bundle for a stowaway root.** Some CAs (SSL.com via
+> Namecheap, for one) ship a `.ca-bundle` that contains the intermediates
+> **and the root** — sometimes in server-hostile order. Inspect it with the
+> same `pkcs7 -print_certs` command: the cert whose subject equals its own
+> issuer is the root. Strip it; if it's the last block, the first N blocks
+> are your intermediates:
+>
+> ```bash
+> # keep only the first cert of a two-cert bundle (intermediate + root)
+> awk '/BEGIN CERTIFICATE/{n++} n==1' bundle.ca-bundle > intermediates.crt
+> ```
+
+> **What's mandatory vs. hygiene:** the **leaf being first is mandatory** —
+> the server matches its private key against the *first* cert in the file
+> (Go's `tls.LoadX509KeyPair`, which Teleport uses, fails to load the
+> keypair otherwise) and sends the remaining blocks verbatim as the chain.
+> Including the root is merely wasteful: clients ignore a redundant anchor,
+> so `leaf + intermediates + root` still works — it just adds ~2KB to every
+> handshake and makes TLS scanners flag "chain contains anchor". Ship
+> `leaf + intermediates` and both problems never come up.
 
 ---
 
