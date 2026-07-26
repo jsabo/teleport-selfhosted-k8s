@@ -6,3 +6,9 @@ demo-pki/out/
 
 # k3s runtime kubeconfig
 k3s/kubeconfig/
+
+# Local certificate working files — never commit private keys
+*.key
+*.csr
+chain.crt
+teleport-csr.cnf

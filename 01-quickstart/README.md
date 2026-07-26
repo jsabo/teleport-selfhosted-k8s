@@ -54,7 +54,7 @@ helm repo update
 
 helm install teleport-cluster teleport/teleport-cluster \
   --namespace teleport \
-  --version 18.10.0 \
+  --version 18.10.1 \
   --values teleport-cluster-values.yaml \
   --wait --timeout 10m
 ```

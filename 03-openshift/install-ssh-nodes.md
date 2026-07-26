@@ -29,7 +29,7 @@ Copy the token string — you'll need it in Step 3. Tokens are single-use and ex
 Run the appropriate block on each target node.
 
 > **Match the cluster version.** An agent must never be newer than the auth
-> service it joins. The cluster in this repo is pinned to **18.10.0**, so pin
+> service it joins. The cluster in this repo is pinned to **18.10.1**, so pin
 > the package to the same version (shown below) — a bare `install teleport-ent`
 > pulls the latest 18.x, which may be ahead of your cluster.
 
@@ -51,7 +51,7 @@ echo "deb [signed-by=/etc/apt/keyrings/teleport-archive-keyring.asc] \
   | sudo tee /etc/apt/sources.list.d/teleport.list >/dev/null
 
 sudo apt-get update
-sudo apt-get install -y teleport-ent=18.10.0   # use 'teleport' for OSS
+sudo apt-get install -y teleport-ent=18.10.1   # use 'teleport' for OSS
 ```
 
 ### RHEL 8+ / Rocky / AlmaLinux (DNF)
@@ -61,7 +61,7 @@ sudo dnf install -y dnf-plugins-core
 VERSION_ID_MAJOR="$(echo "$VERSION_ID" | grep -Eo '^[0-9]+')"   # "8.10" -> "8"
 sudo dnf config-manager --add-repo \
   "$(rpm --eval "https://yum.releases.teleport.dev/${ID}/${VERSION_ID_MAJOR}/Teleport/%{_arch}/stable/v18/teleport.repo")"
-sudo dnf install -y teleport-ent-18.10.0   # use 'teleport' for OSS
+sudo dnf install -y teleport-ent-18.10.1   # use 'teleport' for OSS
 ```
 
 ### RHEL 7 / Amazon Linux 2 (YUM)
@@ -71,7 +71,7 @@ sudo yum install -y yum-utils
 VERSION_ID_MAJOR="$(echo "$VERSION_ID" | grep -Eo '^[0-9]+')"
 sudo yum-config-manager --add-repo \
   "$(rpm --eval "https://yum.releases.teleport.dev/${ID}/${VERSION_ID_MAJOR}/Teleport/%{_arch}/stable/v18/teleport.repo")"
-sudo yum install -y teleport-ent-18.10.0   # use 'teleport' for OSS
+sudo yum install -y teleport-ent-18.10.1   # use 'teleport' for OSS
 ```
 
 ---
@@ -247,8 +247,8 @@ Teleport ships an SELinux policy module. Without it, Teleport will fail to spawn
 sudo dnf install -y selinux-policy-devel
 
 # Download the Teleport tarball for your version and extract the SELinux installer
-curl -O https://cdn.teleport.dev/teleport-ent-v18.10.0-linux-amd64-bin.tar.gz
-tar -xzf teleport-ent-v18.10.0-linux-amd64-bin.tar.gz
+curl -O https://cdn.teleport.dev/teleport-ent-v18.10.1-linux-amd64-bin.tar.gz
+tar -xzf teleport-ent-v18.10.1-linux-amd64-bin.tar.gz
 sudo ./teleport-ent/install-selinux.sh
 ```
 
@@ -274,10 +274,10 @@ Download directly from Teleport's CDN onto a jump host, copy to the target, and 
 
 ```bash
 # On a host with internet access:
-curl -O https://cdn.teleport.dev/teleport-ent-v18.10.0-linux-amd64-bin.tar.gz
+curl -O https://cdn.teleport.dev/teleport-ent-v18.10.1-linux-amd64-bin.tar.gz
 
 # Copy to target node, then:
-tar -xzf teleport-ent-v18.10.0-linux-amd64-bin.tar.gz
+tar -xzf teleport-ent-v18.10.1-linux-amd64-bin.tar.gz
 sudo ./teleport-ent/install
 ```
 

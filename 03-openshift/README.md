@@ -247,7 +247,7 @@ Install:
 ```bash
 helm install teleport-cluster teleport/teleport-cluster \
   --namespace teleport \
-  --version 18.10.0 \
+  --version 18.10.1 \
   --values ${VALUES_FILE} \
   --wait --timeout 5m
 ```
