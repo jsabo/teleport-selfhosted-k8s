@@ -327,29 +327,63 @@ tls:
   existingSecretName: teleport-tls
 ```
 
-- **Public CA**: that's everything. Do **not** set `existingCASecretName` —
-  it would *replace* the pods' default Mozilla trust bundle with only your
-  CA, breaking Teleport's outbound TLS (SSO providers, plugins, webhooks).
-- **Corporate PKI**: same values — the CA secret isn't needed on the server
-  side either. What *is* needed: the corporate root in the OS trust store of
-  every connecting workstation and every enrolled node (see
-  [`03-openshift/install-ssh-nodes.md`](03-openshift/install-ssh-nodes.md)
-  for the node-side commands).
+- **Public CA**: that's everything — usually. Do **not** set
+  `existingCASecretName` for a publicly trusted cert; the container's
+  Mozilla bundle already has the root. (Exception: a brand-new CA root —
+  see the crashloop note below.)
+- **Private / corporate PKI**: the pods **do** need your CA. Create a second
+  secret and point the chart at it:
 
-> **Two directions of trust — don't mix them up.** The chart's
-> `tls.existingCASecretName` controls what the *Teleport pods* trust when
-> **they** dial out (it sets `SSL_CERT_FILE`; the
-> [chart reference](https://goteleport.com/docs/reference/helm-reference/teleport-cluster/)
-> lists OIDC providers and S3-compatible backends as the use cases). It does
-> **nothing** for tsh, browsers, or enrolling nodes — their trust comes from
-> their own OS trust stores, and no server-side setting can substitute for
-> that. The pods don't need to trust your serving cert either: nothing in
-> this topology makes Teleport call its own public address. Set
-> `existingCASecretName` only when Teleport must reach an *external* service
-> that presents private-PKI certs (an internal IdP, internal S3, or egress
-> through a TLS-inspecting proxy) — and then the secret must contain your
-> corporate root **appended to the full Mozilla bundle**, because the
-> setting replaces the default bundle rather than adding to it.
+  ```bash
+  kubectl -n teleport create secret generic teleport-tls-ca \
+    --from-file=ca.pem=corporate-root-ca.crt
+  ```
+
+  ```yaml
+  tls:
+    existingSecretName: teleport-tls
+    existingCASecretName: teleport-tls-ca
+  ```
+
+  **Why:** at startup the Proxy Service verifies its own configured cert
+  chain against the *container's* trust store and exits fatally if the
+  chain doesn't terminate at a trusted root (`x509: certificate signed by
+  unknown authority`, pods in CrashLoopBackOff). A corporate root is never
+  in the container's Mozilla bundle. `existingCASecretName` sets
+  `SSL_CERT_FILE`, which Go's cert pool honors — that's how the check
+  passes. This check has existed since 2017; every Teleport version
+  behaves this way.
+
+  Two caveats: (1) `SSL_CERT_FILE` **replaces** the Mozilla bundle for the
+  pods' outbound TLS too — if Teleport must also reach public endpoints
+  (SSO providers, webhooks, plugins), the secret must contain your
+  corporate root **appended to the full Mozilla bundle**, not the root
+  alone. (2) This does nothing for clients — the corporate root must still
+  be in the OS trust store of every workstation and every enrolled node
+  (see [`03-openshift/install-ssh-nodes.md`](03-openshift/install-ssh-nodes.md)).
+
+> **Proxy CrashLoopBackOff: `unable to verify HTTPS certificate chain`** —
+> the startup check above failed. Two causes, two fixes:
+>
+> 1. **Private/corporate PKI** and no CA secret → create `teleport-tls-ca`
+>    and set `existingCASecretName` as shown above.
+> 2. **Public CA whose root is newer than the container's bundle.** CA
+>    trust bundles in server images lag: a recently established root (e.g.
+>    SSL.com's 2022 roots vs. the Debian bundle in the Teleport image) may
+>    be missing even though your laptop trusts it. CAs bridge this by
+>    cross-signing the new root with an older established one — fetch the
+>    cross-signed cert from the CA's repository and append it to
+>    `chain.crt` (leaf → intermediates → cross-signed root). It acts as one
+>    more intermediate: old-bundle hosts chain through it, modern clients
+>    ignore it. This also fixes older *client* machines with dated bundles.
+>    Verify before deploying:
+>
+>    ```bash
+>    # extract the ACTUAL trust bundle from the image you deploy
+>    CID=$(docker create public.ecr.aws/gravitational/teleport-ent-distroless:<version>)
+>    docker cp $CID:/etc/ssl/certs/ca-certificates.crt image-bundle.crt && docker rm $CID
+>    openssl verify -CAfile image-bundle.crt -untrusted intermediates.crt leaf.crt
+>    ```
 
 ---
 

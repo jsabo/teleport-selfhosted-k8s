@@ -38,6 +38,13 @@ enterprise: true
 acme: false
 tls:
   existingSecretName: teleport-tls   # kubectl create secret tls — chain + key (Step 4B)
+  # PRIVATE/CORPORATE PKI ONLY — uncomment both lines and create the
+  # teleport-tls-ca secret (Step 4B). The proxy verifies its own cert chain
+  # against the container trust store at startup and crash-loops if the
+  # issuing CA isn't trusted; this mounts your CA and sets SSL_CERT_FILE.
+  # Leave commented for publicly trusted CAs.
+  # existingCASecretName: teleport-tls-ca
+  # existingCASecretKeyName: ca.pem
 
 auth:
   teleportConfig:

@@ -166,15 +166,23 @@ openssl verify -CAfile root.crt -untrusted intermediates.crt teleport_example_co
 
 The cert must have `${CLUSTER_NAME}` in its SAN. No self-signed CA is needed.
 
-> **Private/corporate PKI:** no CA secret is added to the install — but the
-> corporate root CA must be in the OS trust store of every machine that
-> connects (workstations for browser/tsh, and each node you enroll — see
-> [install-ssh-nodes.md](install-ssh-nodes.md)). On corporate-managed
-> devices it usually already is. Verify from a client machine with
-> `curl https://${CLUSTER_NAME}/webapi/ping` (no `-k`) — success means the
-> trust store is fine. Also make sure the issuing/intermediate CA certs are
-> included in `chain.crt` after the leaf; a leaf-only secret fails on
-> clients even when the root is trusted.
+> **Private/corporate PKI:** two extra requirements beyond the chain:
+>
+> 1. **The pods must trust your CA.** The Proxy Service verifies its own
+>    cert chain against the container's trust store at startup and
+>    crash-loops if the root isn't there (`unable to verify HTTPS
+>    certificate chain` … `x509: certificate signed by unknown authority`) —
+>    and a corporate root never is. Create the CA secret in Step 4B and
+>    uncomment `existingCASecretName` in `values-trusted.yaml`.
+> 2. **Clients must trust your CA too** — the corporate root in the OS
+>    trust store of every workstation (browser/tsh) and every node you
+>    enroll (see [install-ssh-nodes.md](install-ssh-nodes.md)). On
+>    corporate-managed devices it usually already is. Verify from a client:
+>    `curl https://${CLUSTER_NAME}/webapi/ping` (no `-k`).
+>
+> Also make sure the issuing/intermediate CA certs are included in
+> `chain.crt` after the leaf; a leaf-only secret fails on clients even when
+> the root is trusted.
 
 ---
 
@@ -214,6 +222,12 @@ kubectl create secret tls teleport-tls \
 
 kubectl create secret generic license \
   --from-file=license.pem=../license.pem \
+  -n teleport
+
+# PRIVATE/CORPORATE PKI ONLY — the pods must trust your CA (see the note
+# in Step 3B). Also uncomment existingCASecretName in values-trusted.yaml.
+kubectl create secret generic teleport-tls-ca \
+  --from-file=ca.pem=corporate-root-ca.crt \
   -n teleport
 ```
 
@@ -370,6 +384,7 @@ Deletes the PVC and all cluster data — not recoverable.
 |---------|-----|
 | Pods `Pending` / `CreateContainerConfigError` | Re-run Step 2 SCC commands, then `kubectl rollout restart deployment -n teleport` |
 | `certificate signed by unknown authority` in browser/tsh | Import `ca.crt` (or the corporate root) into the OS trust store, or use `tsh login --insecure` for testing |
+| Proxy pods CrashLoopBackOff: `unable to verify HTTPS certificate chain in /etc/teleport-tls/tls.crt` | The proxy verifies its own cert chain against the **container's** trust store at startup and exits on failure. Private/corporate PKI → create the `teleport-tls-ca` secret (Step 4B) and set `existingCASecretName` in the values. Public CA whose root is newer than the image's bundle → append the CA's **cross-signed root** to `chain.crt` and recreate the secret (see [`../ssl-certificates.md`](../ssl-certificates.md), crashloop note) |
 | `transport: authentication handshake failed: context deadline exceeded` on `tsh login` | The HTTPS phase works but the ALPN-routed gRPC connection can't complete — something between tsh and Teleport is terminating TLS. Check, in order: (1) the Route is `termination: passthrough` (not edge/reencrypt): `oc get route teleport -n teleport -o jsonpath='{.spec.tls.termination}'`; (2) multiplex took effect: `curl -sk https://${CLUSTER_NAME}/webapi/ping \| jq .proxy.tls_routing_enabled` must be `true`; (3) the cert the client sees is the one in the secret — compare `openssl s_client` and secret fingerprints (see [`../ssl-certificates.md`](../ssl-certificates.md) Step 8). Differing fingerprints = a TLS-inspecting middlebox or edge-terminating hop; try `TELEPORT_TLS_ROUTING_CONN_UPGRADE=true tsh login ...` to confirm and work around |
 | `missing selected ALPN property` after password+OTP (with `--insecure`) | `--insecure` causes a code path where the server does not select ALPN for the post-auth gRPC channel. Use `TELEPORT_TLS_ROUTING_CONN_UPGRADE=true tsh login ... --insecure` — the WebSocket upgrade bypasses ALPN negotiation entirely |
 | `missing selected ALPN property` after password+OTP (without `--insecure`) | `clusterName` doesn't match the Route hostname — reinstall required. Ensure `clusterName`, `public_addr`, `rp_id`, and the Route `host` all use the same FQDN |
