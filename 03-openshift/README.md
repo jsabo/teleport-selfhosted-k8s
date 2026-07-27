@@ -36,8 +36,12 @@ the wildcard `*.apps...` record already exists):
 APPS_DOMAIN=$(oc get ingresses.config/cluster -o jsonpath='{.spec.domain}')
 export CLUSTER_NAME="teleport.${APPS_DOMAIN}"
 export KUBE_CLUSTER_NAME=$(oc get infrastructure/cluster -o jsonpath='{.status.infrastructureName}')
-# The auth service's SNI is the hex-encoded cluster name (see Step 6)
+# The auth service's SNI is the hex-encoded cluster name (see Step 6).
+# Hex doubles the length and DNS labels cap at 63 chars, so names longer
+# than 31 chars need the wildcard auth route variant in Step 6:
 export CLUSTER_NAME_HEX=$(printf '%s' "$CLUSTER_NAME" | xxd -p | tr -d '\n')
+[ ${#CLUSTER_NAME} -le 31 ] && echo "exact auth route OK" \
+  || echo "name > 31 chars: use route-auth-sni-wildcard.yaml in Step 6"
 echo $CLUSTER_NAME        # e.g. teleport.apps.ocp.example.com
 echo $KUBE_CLUSTER_NAME   # e.g. ocp
 echo $CLUSTER_NAME_HEX    # e.g. 74656c65706f72742e617070732e6f63702e6578616d706c652e636f6d
@@ -51,8 +55,12 @@ the router:
 ```bash
 export CLUSTER_NAME="teleport.example.com"
 export KUBE_CLUSTER_NAME=$(oc get infrastructure/cluster -o jsonpath='{.status.infrastructureName}')
-# The auth service's SNI is the hex-encoded cluster name (see Step 6)
+# The auth service's SNI is the hex-encoded cluster name (see Step 6).
+# Hex doubles the length and DNS labels cap at 63 chars, so names longer
+# than 31 chars need the wildcard auth route variant in Step 6:
 export CLUSTER_NAME_HEX=$(printf '%s' "$CLUSTER_NAME" | xxd -p | tr -d '\n')
+[ ${#CLUSTER_NAME} -le 31 ] && echo "exact auth route OK" \
+  || echo "name > 31 chars: use route-auth-sni-wildcard.yaml in Step 6"
 
 # Find the router's load balancer address, then create a CNAME to it
 # in YOUR domain's DNS zone:   teleport.example.com → <router LB hostname>
@@ -392,10 +400,21 @@ own, so **your cert never needs to cover them**; and the only client that
 ever verifies a `*.${CLUSTER_NAME}` name against *your* cert is a browser
 opening an app URL (Step 8).
 
-(The hex encoding is deliberate on Teleport's part — it defeats wildcard
-matching — so a wildcard Route can't cover the auth name. The extra names
-need **no DNS records**: clients always dial `${CLUSTER_NAME}`; these names
+(The hex encoding is deliberate on Teleport's part — it hides the dots so
+the whole cluster name fits in **one label** under `teleport.cluster.local`,
+which is what lets wildcards like Teleport's own internal
+`*.teleport.cluster.local` certificate match it. The extra names need
+**no DNS records**: clients always dial `${CLUSTER_NAME}`; these names
 travel only inside the TLS handshake, which is what HAProxy routes on.)
+
+> **Cluster name longer than 31 characters?** The hex label then exceeds
+> DNS's 63-character limit and the exact `teleport-auth-sni` Route is
+> rejected (`spec.host ... must be no more than 63 characters`) — the other
+> two Routes still apply fine. Use the wildcard variant instead: allow
+> wildcard routes on the IngressController (the Step 8b patch), then
+> `oc apply -f route-auth-sni-wildcard.yaml` — it serves
+> `*.teleport.cluster.local`, matching the hex label at any length. Use one
+> auth route or the other, not both.
 
 Apply all three (order of the `sed` expressions matters —
 `CLUSTER_NAME_HEX` first, since `CLUSTER_NAME` is a substring of it):
@@ -601,6 +620,7 @@ oc patch ingresscontroller/default -n openshift-ingress-operator \
 | `missing selected ALPN property` after password+OTP (with `--insecure`) | `--insecure` causes a code path where the server does not select ALPN for the post-auth gRPC channel. Use `TELEPORT_TLS_ROUTING_CONN_UPGRADE=true tsh login ... --insecure` — the WebSocket upgrade bypasses ALPN negotiation entirely |
 | `missing selected ALPN property` after password+OTP (without `--insecure`) | `clusterName` doesn't match the Route hostname — reinstall required. Ensure `clusterName`, `public_addr`, `rp_id`, and the Route `host` all use the same FQDN |
 | cert error on `teleport.cluster.local` after importing self-signed CA | CA import only helps with the external cert. tsh's post-auth gRPC channel uses Teleport's internal host CA (downloaded during login), which is separate from your self-signed CA. CA import cannot substitute for a CA-issued cert (Options B/C). Use `TELEPORT_TLS_ROUTING_CONN_UPGRADE=true --insecure` for self-signed setups |
+| `The Route "teleport-auth-sni" is invalid: spec.host ... must be no more than 63 characters` | Your cluster name is longer than 31 characters, so its hex label breaks the DNS label limit. Use the wildcard variant: `WildcardsAllowed` on the IngressController (Step 8b patch), then `oc apply -f route-auth-sni-wildcard.yaml` (see the long-name note in Step 6) |
 | `tsh login` fails after password+MFA: `certificate is valid for *.apps.<cluster>.<domain>, not <hex>.teleport.cluster.local` | The `teleport-auth-sni` Route is missing or its host doesn't match `hex(clusterName)` — the router answered the auth connection with its default cert. Re-run Step 6 (all three Routes) and check with the `openssl s_client -servername` command there. The kube equivalent names `kube-teleport-proxy-alpn.<clusterName>` and means the `teleport-kube-sni` Route is missing |
 | `Your user's Teleport role does not allow Kubernetes access` | The user has no `kubernetes_groups` trait (the preset `access` role fills its groups from `{{internal.kubernetes_groups}}`). For an existing user: `tctl users update <user> --set-kubernetes-groups=system:masters`, then `tsh logout` + login again — traits only land in newly issued certs |
 | Wildcard route not admitted (`RouteNotAdmitted` in status) | The IngressController still has `wildcardPolicy: WildcardsDisallowed` — run the Step 8b patch, then recreate the route (`oc delete route teleport-apps-wildcard -n teleport` and re-apply) |

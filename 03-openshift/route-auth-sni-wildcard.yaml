@@ -1,0 +1,47 @@
+# Teleport auth SNI — WILDCARD passthrough Route (for cluster names > 31 chars)
+#
+# The exact-hex auth route in route-passthrough.yaml puts hex(CLUSTER_NAME)
+# in a single DNS label, and DNS labels max out at 63 characters — so it can
+# only be created when the cluster name is 31 characters or less. Longer
+# names (common with apps-domain names like teleport.apps.<cluster>.<domain>)
+# get: 'spec.host: Invalid value: "...": must be no more than 63 characters'.
+#
+# This wildcard Route is the any-length alternative: Teleport hex-encodes
+# the cluster name precisely so the auth SNI is ONE label under
+# teleport.cluster.local — which means *.teleport.cluster.local matches it,
+# whatever its length. (Teleport's own internal certificate covers
+# *.teleport.cluster.local the same way.)
+#
+# Prerequisite — the default IngressController rejects wildcard routes;
+# allow them first (cluster-wide router setting, same patch as Step 8b):
+#
+#   oc patch ingresscontroller/default -n openshift-ingress-operator \
+#     --type=merge -p '{"spec":{"routeAdmission":{"wildcardPolicy":"WildcardsAllowed"}}}'
+#
+# Use EITHER this Route OR the exact-hex teleport-auth-sni route from
+# route-passthrough.yaml — they share the same metadata.name on purpose so
+# they can't coexist. No placeholders here; apply as-is:
+#
+#   oc apply -f route-auth-sni-wildcard.yaml
+#
+# Safe to serve broadly: only Teleport clients ever send SNI under
+# teleport.cluster.local, and HAProxy forwards the raw TLS to Teleport,
+# which answers with its internal certificate.
+
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: teleport-auth-sni
+  namespace: teleport
+spec:
+  host: auth.teleport.cluster.local   # leftmost label is wildcarded → *.teleport.cluster.local
+  port:
+    targetPort: tls
+  tls:
+    termination: passthrough
+    insecureEdgeTerminationPolicy: None
+  to:
+    kind: Service
+    name: teleport-cluster
+    weight: 100
+  wildcardPolicy: Subdomain

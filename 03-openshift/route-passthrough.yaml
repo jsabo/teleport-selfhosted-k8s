@@ -11,11 +11,17 @@
 #   kube-teleport-proxy-alpn.CLUSTER_NAME      kubernetes access
 #
 # CLUSTER_NAME_HEX is hex(CLUSTER_NAME). Teleport hex-encodes the cluster
-# name in the auth SNI precisely so that wildcard certs/routes can't match
-# it (EncodeClusterName in the Teleport source) — so this cannot be solved
-# with a wildcard Route. Compute it in Step 0:
+# name so the auth SNI is a single label under teleport.cluster.local
+# (EncodeClusterName in the Teleport source — the encoding hides dots so
+# wildcard entries like Teleport's internal *.teleport.cluster.local cert
+# can match it). Compute it in Step 0:
 #
 #   export CLUSTER_NAME_HEX=$(printf '%s' "$CLUSTER_NAME" | xxd -p | tr -d '\n')
+#
+# LIMIT: hex doubles the length and DNS labels cap at 63 chars, so the
+# exact teleport-auth-sni Route below is only valid for cluster names of
+# 31 characters or less. Longer names: use route-auth-sni-wildcard.yaml
+# instead (requires WildcardsAllowed on the IngressController).
 #
 # Apply — ORDER MATTERS: CLUSTER_NAME_HEX must be replaced before
 # CLUSTER_NAME, which is a substring of it:
