@@ -56,11 +56,6 @@ tls:
 
 auth:
   teleportConfig:
-    app_service:
-      enabled: true
-      debug_app: true   # registers a demo app ("dumper") — proves Application
-                        # Access end-to-end via Step 8's wildcard Route; harmless
-                        # (and just unreachable) if you skip Step 8
     proxy_service:
       public_addr: "CLUSTER_NAME:443"   # REPLACE — must match Route hostname.
                                         # Teleport embeds this in issued certs

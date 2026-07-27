@@ -1,7 +1,7 @@
 # Teleport Application Access — wildcard passthrough Route (OPTIONAL, Step 8)
 #
 # Teleport serves every registered application at <app>.CLUSTER_NAME
-# (e.g. https://dumper.CLUSTER_NAME), so the router needs one wildcard
+# (e.g. https://grafana.CLUSTER_NAME), so the router needs one wildcard
 # passthrough Route covering *.CLUSTER_NAME. HAProxy matches wildcard SNI
 # for passthrough routes; only a single label is wildcarded (<app> may not
 # contain dots), which is exactly Teleport's app-URL shape.

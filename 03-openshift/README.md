@@ -501,12 +501,15 @@ kubectl get pods -n teleport   # now routed through Teleport
 
 ---
 
-## 8 — Application Access (optional)
+## 8 — Application Access routing (optional)
 
 Teleport serves every registered application at `<app>.${CLUSTER_NAME}`.
-The values files already enable `app_service` with the built-in demo app
-(`dumper`) — it's visible in the web UI under **Applications** right now,
-but unreachable until this step adds the wildcard routing. Three pieces:
+This step sets up everything OpenShift-side that App Access needs — the
+wildcard DNS, router admission, and the wildcard Route. Registering apps
+themselves is out of scope here: apps run on an **app agent** (e.g. the
+`teleport-kube-agent` chart with `roles: app`), not on the
+`teleport-cluster` chart — enable app agents later and their apps work
+immediately through the routing laid down now. Three pieces:
 
 **8a — Wildcard DNS.** `*.${CLUSTER_NAME}` must resolve to the router:
 
@@ -537,14 +540,15 @@ oc get route teleport-apps-wildcard -n teleport \
 
 # Any app subdomain must now reach Teleport (its cert, not the router's):
 openssl s_client -connect ${CLUSTER_NAME}:443 \
-  -servername dumper.${CLUSTER_NAME} </dev/null 2>/dev/null \
+  -servername myapp.${CLUSTER_NAME} </dev/null 2>/dev/null \
   | openssl x509 -noout -subject
 ```
 
-**Prove it end-to-end:** web UI → **Applications** → `dumper` → **Launch**.
-It opens at `https://dumper.${CLUSTER_NAME}` (no cert warning — the
-wildcard SAN covers it) and echoes your request headers, including the
-Teleport-signed JWT every proxied app receives.
+That `openssl` check is the full proof of this step — any single-label
+subdomain now reaches Teleport with a valid cert. When you later deploy an
+app agent and register applications, they're served at
+`https://<app>.${CLUSTER_NAME}` through this routing with no further
+OpenShift changes.
 
 ---
 
@@ -600,7 +604,7 @@ oc patch ingresscontroller/default -n openshift-ingress-operator \
 | `tsh login` fails after password+MFA: `certificate is valid for *.apps.<cluster>.<domain>, not <hex>.teleport.cluster.local` | The `teleport-auth-sni` Route is missing or its host doesn't match `hex(clusterName)` — the router answered the auth connection with its default cert. Re-run Step 6 (all three Routes) and check with the `openssl s_client -servername` command there. The kube equivalent names `kube-teleport-proxy-alpn.<clusterName>` and means the `teleport-kube-sni` Route is missing |
 | `Your user's Teleport role does not allow Kubernetes access` | The user has no `kubernetes_groups` trait (the preset `access` role fills its groups from `{{internal.kubernetes_groups}}`). For an existing user: `tctl users update <user> --set-kubernetes-groups=system:masters`, then `tsh logout` + login again — traits only land in newly issued certs |
 | Wildcard route not admitted (`RouteNotAdmitted` in status) | The IngressController still has `wildcardPolicy: WildcardsDisallowed` — run the Step 8b patch, then recreate the route (`oc delete route teleport-apps-wildcard -n teleport` and re-apply) |
-| App URL (`<app>.<cluster-name>`) shows the router's default cert, a 503, or doesn't resolve | One of Step 8's three pieces is missing: wildcard DNS record (8a), `WildcardsAllowed` (8b), or the `teleport-apps-wildcard` Route (8c). The `openssl s_client -servername dumper...` check in 8c pinpoints which side |
+| App URL (`<app>.<cluster-name>`) shows the router's default cert, a 503, or doesn't resolve | One of Step 8's three pieces is missing: wildcard DNS record (8a), `WildcardsAllowed` (8b), or the `teleport-apps-wildcard` Route (8c). The `openssl s_client -servername` check in 8c pinpoints which side |
 | `webauthn rp_id mismatch` | `rp_id` in the values file must equal the hostname in the browser URL (i.e. `clusterName`) |
 | Route admitted but `curl` times out | SCC permissions may be wrong — check pods are `Running` and not `CreateContainerConfigError` |
 | Cluster state gone after a pod restart | `persistence.enabled` must be `true` (all three values files here set it, with a 10Gi PVC). With SQLite standalone, disabling persistence means every auth pod restart wipes users, CAs, and all issued certs |
