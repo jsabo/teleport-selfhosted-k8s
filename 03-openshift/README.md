@@ -416,6 +416,20 @@ travel only inside the TLS handshake, which is what HAProxy routes on.)
 > `*.teleport.cluster.local`, matching the hex label at any length. Use one
 > auth route or the other, not both.
 
+> **Restrictive networks: the auth SNI may be dropped before it reaches the
+> router.** `teleport.cluster.local` is intentionally not DNS-resolvable —
+> it's an SNI-only routing label — and SNI-filtering middleware (next-gen
+> firewalls, F5s doing SNI-based pool selection) may silently drop TLS for
+> domains it doesn't recognize. The tell: `tsh login` times out *after*
+> password+MFA (`context deadline exceeded`, not a certificate error), and
+> the Step 6 `openssl -servername <hex>.teleport.cluster.local` check
+> **hangs**, while the same command with any name under your real domain
+> answers instantly. Fixes: have the network team permit TLS to the
+> router's address with SNI `*.teleport.cluster.local` (the clean fix — no
+> client changes), or set `TELEPORT_TLS_ROUTING_CONN_UPGRADE=true` on
+> clients as an interim (tunnels the auth channel over WebSocket using the
+> normal, permitted hostname).
+
 Apply all three (order of the `sed` expressions matters —
 `CLUSTER_NAME_HEX` first, since `CLUSTER_NAME` is a substring of it):
 
@@ -622,6 +636,7 @@ oc patch ingresscontroller/default -n openshift-ingress-operator \
 | cert error on `teleport.cluster.local` after importing self-signed CA | CA import only helps with the external cert. tsh's post-auth gRPC channel uses Teleport's internal host CA (downloaded during login), which is separate from your self-signed CA. CA import cannot substitute for a CA-issued cert (Options B/C). Use `TELEPORT_TLS_ROUTING_CONN_UPGRADE=true --insecure` for self-signed setups |
 | `The Route "teleport-auth-sni" is invalid: spec.host ... must be no more than 63 characters` | Your cluster name is longer than 31 characters, so its hex label breaks the DNS label limit. Use the wildcard variant: `WildcardsAllowed` on the IngressController (Step 8b patch), then `oc apply -f route-auth-sni-wildcard.yaml` (see the long-name note in Step 6) |
 | `tsh login` fails after password+MFA: `certificate is valid for *.apps.<cluster>.<domain>, not <hex>.teleport.cluster.local` | The `teleport-auth-sni` Route is missing or its host doesn't match `hex(clusterName)` — the router answered the auth connection with its default cert. Re-run Step 6 (all three Routes) and check with the `openssl s_client -servername` command there. The kube equivalent names `kube-teleport-proxy-alpn.<clusterName>` and means the `teleport-kube-sni` Route is missing |
+| `tsh login` **times out** after password+MFA (`transport: authentication handshake failed: context deadline exceeded`) and the Step 6 auth-SNI `openssl` check *hangs* (an unmatched SNI would get the router's default cert instantly instead) | SNI-filtering middleware between clients and the router is silently dropping TLS with SNI under `teleport.cluster.local` (not DNS-resolvable, so "unknown domain" to such devices). Confirm by comparing against `-servername anything.<your-apps-domain>` (instant answer). Fix at the network: permit TLS to the router with SNI `*.teleport.cluster.local`; interim: `TELEPORT_TLS_ROUTING_CONN_UPGRADE=true` on clients — see the restrictive-networks note in Step 6 |
 | `Your user's Teleport role does not allow Kubernetes access` | The user has no `kubernetes_groups` trait (the preset `access` role fills its groups from `{{internal.kubernetes_groups}}`). For an existing user: `tctl users update <user> --set-kubernetes-groups=system:masters`, then `tsh logout` + login again — traits only land in newly issued certs |
 | Wildcard route not admitted (`RouteNotAdmitted` in status) | The IngressController still has `wildcardPolicy: WildcardsDisallowed` — run the Step 8b patch, then recreate the route (`oc delete route teleport-apps-wildcard -n teleport` and re-apply) |
 | App URL (`<app>.<cluster-name>`) shows the router's default cert, a 503, or doesn't resolve | One of Step 8's three pieces is missing: wildcard DNS record (8a), `WildcardsAllowed` (8b), or the `teleport-apps-wildcard` Route (8c). The `openssl s_client -servername` check in 8c pinpoints which side |
