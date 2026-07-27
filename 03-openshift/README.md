@@ -636,7 +636,7 @@ oc patch ingresscontroller/default -n openshift-ingress-operator \
 | cert error on `teleport.cluster.local` after importing self-signed CA | CA import only helps with the external cert. tsh's post-auth gRPC channel uses Teleport's internal host CA (downloaded during login), which is separate from your self-signed CA. CA import cannot substitute for a CA-issued cert (Options B/C). Use `TELEPORT_TLS_ROUTING_CONN_UPGRADE=true --insecure` for self-signed setups |
 | `The Route "teleport-auth-sni" is invalid: spec.host ... must be no more than 63 characters` | Your cluster name is longer than 31 characters, so its hex label breaks the DNS label limit. Use the wildcard variant: `WildcardsAllowed` on the IngressController (Step 8b patch), then `oc apply -f route-auth-sni-wildcard.yaml` (see the long-name note in Step 6) |
 | `tsh login` fails after password+MFA: `certificate is valid for *.apps.<cluster>.<domain>, not <hex>.teleport.cluster.local` | The `teleport-auth-sni` Route is missing or its host doesn't match `hex(clusterName)` — the router answered the auth connection with its default cert. Re-run Step 6 (all three Routes) and check with the `openssl s_client -servername` command there. The kube equivalent names `kube-teleport-proxy-alpn.<clusterName>` and means the `teleport-kube-sni` Route is missing |
-| `tsh login` **times out** after password+MFA (`transport: authentication handshake failed: context deadline exceeded`) and the Step 6 auth-SNI `openssl` check *hangs* (an unmatched SNI would get the router's default cert instantly instead) | SNI-filtering middleware between clients and the router is silently dropping TLS with SNI under `teleport.cluster.local` (not DNS-resolvable, so "unknown domain" to such devices). Confirm by comparing against `-servername anything.<your-apps-domain>` (instant answer). Fix at the network: permit TLS to the router with SNI `*.teleport.cluster.local`; interim: `TELEPORT_TLS_ROUTING_CONN_UPGRADE=true` on clients — see the restrictive-networks note in Step 6 |
+| `tsh login` **times out** after password+MFA (`transport: authentication handshake failed: context deadline exceeded`) | Run the [SNI-interference diagnostic](#diagnosing-sni-interference-auth-connections-time-out) below — four `openssl` probes that tell a filtering network device apart from a missing Route in under two minutes |
 | `Your user's Teleport role does not allow Kubernetes access` | The user has no `kubernetes_groups` trait (the preset `access` role fills its groups from `{{internal.kubernetes_groups}}`). For an existing user: `tctl users update <user> --set-kubernetes-groups=system:masters`, then `tsh logout` + login again — traits only land in newly issued certs |
 | Wildcard route not admitted (`RouteNotAdmitted` in status) | The IngressController still has `wildcardPolicy: WildcardsDisallowed` — run the Step 8b patch, then recreate the route (`oc delete route teleport-apps-wildcard -n teleport` and re-apply) |
 | App URL (`<app>.<cluster-name>`) shows the router's default cert, a 503, or doesn't resolve | One of Step 8's three pieces is missing: wildcard DNS record (8a), `WildcardsAllowed` (8b), or the `teleport-apps-wildcard` Route (8c). The `openssl s_client -servername` check in 8c pinpoints which side |
@@ -644,6 +644,92 @@ oc patch ingresscontroller/default -n openshift-ingress-operator \
 | Route admitted but `curl` times out | SCC permissions may be wrong — check pods are `Running` and not `CreateContainerConfigError` |
 | Cluster state gone after a pod restart | `persistence.enabled` must be `true` (all three values files here set it, with a 10Gi PVC). With SQLite standalone, disabling persistence means every auth pod restart wipes users, CAs, and all issued certs |
 | `tctl` access from local machine | `export KUBECONFIG=<path>; kubectl exec -n teleport deployment/teleport-cluster-auth -- tctl <cmd>` |
+
+### Diagnosing SNI interference (auth connections time out)
+
+**When to run this:** `tsh login` accepts your password and MFA, then fails
+with `transport: authentication handshake failed: context deadline
+exceeded` — a **timeout**, not a certificate error. (A fast certificate
+error naming `<hex>.teleport.cluster.local` is a different problem: a
+missing/mismatched Route — see the table above.)
+
+**The principle that makes this diagnosable:** every Teleport connection
+goes to the *same IP and port*; they differ only in the SNI hostname
+announced (in cleartext) at the start of the TLS handshake. And an SNI
+that actually *reaches* the OpenShift router is **always answered
+instantly** — with the matching Route's backend, or with the router's
+default certificate if nothing matches. Therefore: **an instant answer
+means the probe reached the router; a hang means a device between you and
+the router read the SNI and silently dropped the connection.** Corporate
+NGFWs, TLS-inspection appliances, and F5s doing SNI-based pool selection
+all behave this way toward hostnames they can't resolve or don't
+recognize — and `teleport.cluster.local` is deliberately unresolvable
+(it's an SNI-only routing label).
+
+Run all four probes from the machine where `tsh` fails. Each should take
+under a second — if one sits silent for 10+ seconds, that's a hang
+(Ctrl-C it; macOS has no `timeout` command unless you
+`brew install coreutils`):
+
+```bash
+# From Step 0: CLUSTER_NAME, CLUSTER_NAME_HEX; APPS_DOMAIN = the cluster's apps domain
+
+# P1 — control: valid, resolvable name, matches no Route
+openssl s_client -connect ${CLUSTER_NAME}:443 \
+  -servername anything.${APPS_DOMAIN} </dev/null | openssl x509 -noout -subject
+
+# P2 — kube SNI: resolvable-domain name with a matching Route
+openssl s_client -connect ${CLUSTER_NAME}:443 \
+  -servername kube-teleport-proxy-alpn.${CLUSTER_NAME} </dev/null | openssl x509 -noout -subject
+
+# P3 — auth SNI: the connection tsh is failing on
+openssl s_client -connect ${CLUSTER_NAME}:443 \
+  -servername ${CLUSTER_NAME_HEX}.teleport.cluster.local </dev/null | openssl x509 -noout -subject
+
+# P4 — length control: valid 62-char label, same unresolvable domain
+openssl s_client -connect ${CLUSTER_NAME}:443 \
+  -servername $(printf 'a%.0s' $(seq 62)).teleport.cluster.local </dev/null | openssl x509 -noout -subject
+```
+
+Expected when everything is healthy — all instant: P1 → the router's
+default cert (`CN=*.apps...`); P2 → Teleport's internal cert
+(`O=Proxy, CN=<uuid>...`); P3 → a cert served by Teleport (your configured
+cert or an internal `O=Proxy` one — either proves the Route delivered the
+connection to Teleport).
+
+**Interpretation:**
+
+| P1 | P3 | P4 | Diagnosis |
+|---|---|---|---|
+| instant | **hangs** | **hangs** | **SNI-domain filtering** — a device drops TLS for unknown/unresolvable SNI domains before it reaches the router. Fix below |
+| instant | **hangs** | instant | Filtering specific to **labels over 63 chars** (long cluster names produce an RFC-invalid SNI label). Same fixes below |
+| instant | instant, **router default** cert (`*.apps...`) | — | Nothing is filtering — the auth Route is missing or its host doesn't match `hex(clusterName)`; re-run Step 6 |
+| instant | instant, a Teleport-served cert (your cert or `O=Proxy`) | — | Network and routing are fine — debug the client instead (`tsh login --debug`) |
+| **hangs** | — | — | Not SNI-specific — general connectivity/DNS/LB problem to port 443 |
+
+**Localizing the device:** rerun the hanging probe from a host adjacent to
+the cluster (e.g. where `oc` runs). If it answers there but hangs from the
+workstation, the filter sits on the perimeter between them.
+
+**Fixes for the filtering cases:**
+
+1. **Network exception (the clean fix — clients stay flag-free).**
+   Request for the network team, ready to send:
+   > Permit TLS to `<router address>:443` with SNI matching
+   > `*.teleport.cluster.local`. This is the Teleport deployment's
+   > authentication channel. The name is intentionally not DNS-resolvable —
+   > it is an SNI-only routing label inside the TLS handshake, terminated
+   > by the OpenShift router's passthrough Route. Evidence: identical
+   > connections with SNI under our real apps domain are answered in
+   > under a second; any SNI under `teleport.cluster.local` is silently
+   > dropped.
+2. **Interim: `TELEPORT_TLS_ROUTING_CONN_UPGRADE=true`** on clients —
+   tsh then carries the auth channel inside an ordinary HTTPS connection
+   to the approved hostname (WebSocket upgrade), so the filter never sees
+   the special SNI. Works immediately; set it machine-wide in a managed
+   shell profile rather than per-command, and drop it once the network
+   exception lands. (tsh cannot auto-detect this condition — its probe
+   tests the *approved* hostname, which passes.)
 
 ---
 
