@@ -20,15 +20,22 @@ The worked example uses `teleport.example.com`. Substitute your cluster name.
 **the Teleport `clusterName`, the DNS name clients resolve, and the
 certificate SANs must all be the same string** — and the name is permanent.
 
-You need **two** names in the certificate:
+Two names go in the certificate — one required, one you should include now:
 
-| SAN | Why |
-|---|---|
-| `teleport.example.com` | The cluster name — web UI, tsh, API, everything |
-| `*.teleport.example.com` | Application Access serves every app at `<app>.teleport.example.com` |
+| SAN | Status | Why |
+|---|---|---|
+| `teleport.example.com` | **Required** | The cluster name — web UI, tsh login, ssh, kube, db: everything |
+| `*.teleport.example.com` | **Strongly recommended** | Only **Application Access** needs it — browsers open apps at `<app>.teleport.example.com` and verify that name against your cert. Include it now anyway: SANs can't be added to an issued cert, so skipping it means a full reissue the day you want apps — and wildcard products include the base name for free |
 
 Modern clients only look at the SAN list — a name that is only in the CN
 does not count.
+
+> Despite appearances, **Kubernetes access does not need the wildcard in
+> this cert**. Its `kube-teleport-proxy-alpn.<cluster name>` SNI is
+> routing-only — Teleport automatically covers that name with its own
+> internally-issued certificate, and kubectl verifies against Teleport's
+> CA, never yours. Browsers hitting app URLs are the only clients that
+> check a `*.` name against the certificate you're creating here.
 
 ---
 
@@ -66,7 +73,9 @@ openssl req -new -newkey rsa:2048 -nodes \
 (The file names stay wildcard-free — `*` in filenames is asking for shell
 trouble. For a **corporate PKI** request, ask your PKI team which CN form
 their template expects — base name or wildcard; either is fine as long as
-both SANs end up in the issued cert, which is what Step 3 checks.)
+both SANs end up in the issued cert, which is what Step 3 checks. And if
+you've decided against the wildcard entirely: use the base name as the CN
+and drop the wildcard SAN — everything else in this guide is identical.)
 
 Verify the CSR **before** submitting it — CN and both SANs:
 

@@ -128,33 +128,50 @@ own values file in Step 5:
 
 ### Option A — Self-signed (demo CA; no public DNS / air-gapped)
 
-Run as one block — `$CLUSTER_NAME` must be exported from Step 0:
+The CSR here has the same shape as the real-CA paths in
+[`../ssl-certificates.md`](../ssl-certificates.md) — wildcard CN, both SANs
+— so all three options read identically. (The CN itself only matters to
+public-CA order forms; for self-signed it's cosmetic.)
+
+Run as one block — `$CLUSTER_NAME` must be exported from Step 0. Note the
+heredoc uses an *unquoted* `EOF` so `${CLUSTER_NAME}` expands:
 
 ```bash
+# The demo CA
 openssl genrsa -out ca.key 4096
 openssl req -new -x509 -days 1825 -key ca.key -out ca.crt \
   -subj "/CN=Teleport CA/O=Demo Org"
 
-openssl genrsa -out server.key 4096
-openssl req -new -key server.key -out server.csr \
-  -subj "/CN=${CLUSTER_NAME}/O=Demo Org"
+# Key + CSR — one config file carries the SANs for both the CSR and signing
+cat > teleport-csr.cnf <<EOF
+[req]
+distinguished_name = dn
+req_extensions     = req_ext
+prompt             = no
 
-cat > server.ext <<EOF
-[SAN]
-subjectAltName=DNS:${CLUSTER_NAME},DNS:*.${CLUSTER_NAME},IP:127.0.0.1
+[dn]
+CN = *.${CLUSTER_NAME}
+
+[req_ext]
+subjectAltName = DNS:*.${CLUSTER_NAME}, DNS:${CLUSTER_NAME}
 EOF
 
+openssl req -new -newkey rsa:2048 -nodes \
+  -keyout server.key -out server.csr \
+  -config teleport-csr.cnf
+
+# Sign with the demo CA, reusing the same config file's SAN section
 openssl x509 -req -days 825 -in server.csr \
   -CA ca.crt -CAkey ca.key -CAcreateserial \
-  -out server.crt -extfile server.ext -extensions SAN
+  -out server.crt -extfile teleport-csr.cnf -extensions req_ext
 
-openssl x509 -noout -text -in server.crt | grep -A2 "Subject Alternative"
+openssl x509 -noout -ext subjectAltName -in server.crt
 ```
 
 Expected output:
 ```
 X509v3 Subject Alternative Name:
-    DNS:teleport.apps.ocp.example.com, DNS:*.teleport.apps.ocp.example.com, IP Address:127.0.0.1
+    DNS:*.teleport.apps.ocp.example.com, DNS:teleport.apps.ocp.example.com
 ```
 
 > Self-signed is the one path where the CA cert rides along inside
@@ -363,11 +380,17 @@ The router matches passthrough traffic **by SNI**, and Teleport announces
 three different SNI names over port 443 — so Teleport needs **three**
 passthrough Routes, all pointing at the same Service:
 
-| SNI the client sends | Used by |
-|---|---|
-| `${CLUSTER_NAME}` | web UI, tsh ssh/db, agent joins |
-| `${CLUSTER_NAME_HEX}.teleport.cluster.local` | auth gRPC — `tsh login`, `tctl` |
-| `kube-teleport-proxy-alpn.${CLUSTER_NAME}` | Kubernetes access |
+| SNI the client sends | Used by | Cert Teleport presents | Client verifies against |
+|---|---|---|---|
+| `${CLUSTER_NAME}` | web UI, tsh ssh/db, agent joins | **Your cert** (Step 3) | OS trust store |
+| `${CLUSTER_NAME_HEX}.teleport.cluster.local` | auth gRPC — `tsh login`, `tctl` | Teleport's internal cert (`*.teleport.cluster.local`) | Host CA tsh downloads at login |
+| `kube-teleport-proxy-alpn.${CLUSTER_NAME}` | Kubernetes access | Teleport's internal cert (it auto-adds `*.${CLUSTER_NAME}` to its own cert for exactly this) | Teleport CA pinned in the kubeconfig |
+
+Two useful consequences of that last column: the Routes only carry *names*
+— for the auth and kube SNIs, the certificate that answers is Teleport's
+own, so **your cert never needs to cover them**; and the only client that
+ever verifies a `*.${CLUSTER_NAME}` name against *your* cert is a browser
+opening an app URL (Step 8).
 
 (The hex encoding is deliberate on Teleport's part — it defeats wildcard
 matching — so a wildcard Route can't cover the auth name. The extra names
